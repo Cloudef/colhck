@@ -153,6 +153,13 @@ glhckObject* glhckCubeFromKazmathAABBExtent(const kmAABBExtent *aabb)
    return o;
 }
 
+glhckObject* glhckCubeFromKazmathSphere(const kmSphere *sphere)
+{
+   glhckObject *o = glhckSphereNew(sphere->radius);
+   glhckObjectPosition(o, &sphere->point);
+   return o;
+}
+
 static const int WIDTH = 800;
 static const int HEIGHT = 480;
 static char RUNNING = 1;
@@ -165,10 +172,13 @@ static void windowCloseCallback(GLFWwindow *window)
 typedef struct AABBvsAABB {
    const kmAABB *a, *b;
    glhckObject *oa, *ob;
+   char intersection;
 } AABBvsAABB;
 
 typedef struct AABBEvsAABBE {
    const kmAABBExtent *a, *b;
+   glhckObject *oa, *ob;
+   char intersection;
 } AABBEvsAABBE;
 
 typedef struct OBBvsOBB {
@@ -177,21 +187,32 @@ typedef struct OBBvsOBB {
 
 typedef struct SphereVsSphere {
    const kmSphere *a, *b;
+   glhckObject *oa, *ob;
+   char intersection;
 } SphereVsSphere;
 
 static void textToObject(glhckText *text, unsigned int font, int size, glhckObject *object, const char *str)
 {
    const kmVec3 *posit = glhckObjectGetPosition(object);
-   const kmVec3 *scale = glhckObjectGetScale(object);
-   glhckTextStash(text, font, size, posit->x-scale->x, posit->y+scale->y+size, str, NULL);
+   const kmAABB *aabb = glhckObjectGetAABB(object);
+   glhckTextStash(text, font, size, aabb->min.x, aabb->max.y+1+size, str, NULL);
    glhckTextRender(text);
    glhckTextClear(text);
 }
 
 static void run(GLFWwindow *window)
 {
+   typedef enum primitiveType {
+      PRIMITIVE_AABB,
+      PRIMITIVE_AABBE,
+      PRIMITIVE_SPHERE,
+      PRIMITIVE_LAST,
+   } primitiveType;
+
+   primitiveType primitive = PRIMITIVE_AABB;
    unsigned int i, textSize, font;
-   char keyLock = 0;
+   char keyLock = 0, expectIntersection = 0, didIntersect = 0;
+   char *primitiveStr = NULL;
    glhckText *text;
    kmMat4 ortho;
 
@@ -201,27 +222,37 @@ static void run(GLFWwindow *window)
    #define LENGTH(X) (sizeof X / sizeof X[0])
    AABBvsAABB aabbTests[] = {
       {.a = (&(kmAABB){.min = {WIDTH*0.2-50,HEIGHT/2-50,0}, .max = {WIDTH*0.2+50,HEIGHT/2+50,0}}),
-       .b = (&(kmAABB){.min = {WIDTH*0.8-50,HEIGHT/2-50,0}, .max = {WIDTH*0.8+50,HEIGHT/2+50,0}})},
+       .b = (&(kmAABB){.min = {WIDTH*0.8-50,HEIGHT/2-50,0}, .max = {WIDTH*0.8+50,HEIGHT/2+50,0}}),
+       .intersection = 0},
       {.a = (&(kmAABB){.min = {WIDTH*0.2-50,HEIGHT/2-50,0}, .max = {WIDTH*0.2+50,HEIGHT/2+50,0}}),
-       .b = (&(kmAABB){.min = {WIDTH*0.4-50,HEIGHT/2-50,0}, .max = {WIDTH*0.8+50,HEIGHT/2+50,0}})},
+       .b = (&(kmAABB){.min = {WIDTH*0.4-50,HEIGHT/2-50,0}, .max = {WIDTH*0.8+50,HEIGHT/2+50,0}}),
+       .intersection = 0},
       {.a = (&(kmAABB){.min = {WIDTH*0.2-50,HEIGHT/2-50,0}, .max = {WIDTH*0.2+50,HEIGHT/2+50,0}}),
-       .b = (&(kmAABB){.min = {WIDTH*0.2+00,HEIGHT/2+20,0}, .max = {WIDTH*0.2+100,HEIGHT/2+120,0}})},
+       .b = (&(kmAABB){.min = {WIDTH*0.2+00,HEIGHT/2+20,0}, .max = {WIDTH*0.2+100,HEIGHT/2+120,0}}),
+       .intersection = 1},
+   };
+   AABBEvsAABBE aabbeTests[] = {
+      {.a = (&(kmAABBExtent){.point = {WIDTH*0.2,HEIGHT/2,0}, .extent = {50,50,0}}),
+       .b = (&(kmAABBExtent){.point = {WIDTH*0.8,HEIGHT/2,0}, .extent = {50,50,0}}),
+       .intersection = 0},
+      {.a = (&(kmAABBExtent){.point = {WIDTH*0.2,HEIGHT/2,0}, .extent = {50,50,0}}),
+       .b = (&(kmAABBExtent){.point = {WIDTH*0.6,HEIGHT/2,0}, .extent = {200,50,0}}),
+       .intersection = 0},
+      {.a = (&(kmAABBExtent){.point = {WIDTH*0.2,HEIGHT/2,0}, .extent = {50,50,0}}),
+       .b = (&(kmAABBExtent){.point = {WIDTH*0.2+50,HEIGHT/2+50,0}, .extent = {50,50,0}}),
+       .intersection = 1},
    };
    SphereVsSphere sphereTests[] = {
-      {.a = (&(kmSphere){.point = {0,0,0}, .radius = 5}),
-       .b = (&(kmSphere){.point = 6, .radius = 2})},
+      {.a = (&(kmSphere){.point = {WIDTH*0.2,HEIGHT/2,0}, .radius = 50}),
+       .b = (&(kmSphere){.point = {WIDTH*0.8,HEIGHT/2,0}, .radius = 50}),
+       .intersection = 0},
+      {.a = (&(kmSphere){.point = {WIDTH*0.2,HEIGHT/2,0}, .radius = 50}),
+       .b = (&(kmSphere){.point = {WIDTH*0.42,HEIGHT/2,0}, .radius = 120}),
+       .intersection = 0},
+      {.a = (&(kmSphere){.point = {WIDTH*0.2,HEIGHT/2,0}, .radius = 50}),
+       .b = (&(kmSphere){.point = {WIDTH*0.2+50,HEIGHT/2+50,0}, .radius = 50}),
+       .intersection = 1},
    };
-
-   for (i = 0; i < LENGTH(aabbTests); ++i) {
-      aabbTests[i].oa = glhckCubeFromKazmathAABB(aabbTests[i].a);
-      aabbTests[i].ob = glhckCubeFromKazmathAABB(aabbTests[i].b);
-      glhckObjectDrawAABB(aabbTests[i].oa, 1);
-      glhckObjectDrawAABB(aabbTests[i].ob, 1);
-      glhckMaterial *amat = glhckMaterialNew(NULL);
-      glhckMaterial *bmat = glhckMaterialNew(NULL);
-      glhckObjectMaterial(aabbTests[i].oa, amat);
-      glhckObjectMaterial(aabbTests[i].ob, bmat);
-   }
 
    /* lets use 2D projection for easier visualization of data
     * the text is left-handed, the world in glhck is left-handed, but Y is reversed (positive == UP)
@@ -233,44 +264,102 @@ static void run(GLFWwindow *window)
     *    y       -y
     *
     * */
-   kmMat4OrthographicProjection(&ortho, 0, WIDTH, HEIGHT, 0, -1, 1);
+   kmMat4OrthographicProjection(&ortho, 0, WIDTH, HEIGHT, 0, -500, 500);
    glhckRenderProjectionOnly(&ortho);
+
+   #define createPrimitives(i, primitives, creatFunc) \
+      for (i = 0; i < LENGTH(primitives); ++i) { \
+         primitives[i].oa = creatFunc(primitives[i].a); \
+         primitives[i].ob = creatFunc(primitives[i].b); \
+         glhckObjectDrawAABB(primitives[i].oa, 1); \
+         glhckObjectDrawAABB(primitives[i].ob, 1); \
+         glhckMaterial *amat = glhckMaterialNew(NULL); \
+         glhckMaterial *bmat = glhckMaterialNew(NULL); \
+         glhckObjectMaterial(primitives[i].oa, amat); \
+         glhckObjectMaterial(primitives[i].ob, bmat); \
+      }
+
+   #define testPrimitive(i, primitives, interFunc, expectIntersection, didIntersect) \
+      if (i < LENGTH(primitives)) {             \
+         glhckMaterial *amat = glhckObjectGetMaterial(primitives[i].oa); \
+         glhckMaterial *bmat = glhckObjectGetMaterial(primitives[i].ob); \
+         if (!interFunc(primitives[i].a, primitives[i].b)) { \
+            textToObject(text, font, textSize, primitives[i].oa, "[A] No intersection"); \
+            textToObject(text, font, textSize, primitives[i].ob, "[B] No intersection"); \
+            didIntersect = 0; \
+         } else { \
+            textToObject(text, font, textSize, primitives[i].oa, "[A] Intersection"); \
+            textToObject(text, font, textSize, primitives[i].ob, "[B] Intersection"); \
+            glhckMaterialDiffuseb(amat, 255, 0, 0, 255); \
+            glhckMaterialDiffuseb(bmat, 255, 0, 0, 255); \
+            didIntersect = 1; \
+         } \
+         glhckObjectRender(primitives[i].oa); \
+         glhckObjectRender(primitives[i].ob); \
+         glhckMaterialDiffuseb(amat, 0, 0, 255, 255); \
+         glhckMaterialDiffuseb(bmat, 0, 255, 0, 255); \
+         expectIntersection = primitives[i].intersection; \
+      }
+
+   /* create test primitives */
+   createPrimitives(i, aabbTests, glhckCubeFromKazmathAABB);
+   createPrimitives(i, aabbeTests, glhckCubeFromKazmathAABBExtent);
+   createPrimitives(i, sphereTests, glhckCubeFromKazmathSphere);
 
    i = 0;
    while(RUNNING && glfwGetKey(window, GLFW_KEY_ESCAPE) != GLFW_PRESS) {
       glfwPollEvents();
 
+      /* next intersection test */
       if (glfwGetKey(window, GLFW_KEY_SPACE)) {
-         if (!keyLock && ++i >= LENGTH(aabbTests)) i = 0;
+         if (!keyLock && ++i >= LENGTH(aabbTests)) {
+            if (++primitive >= PRIMITIVE_LAST) primitive = PRIMITIVE_AABB;
+            i = 0;
+         }
          keyLock = 1;
       } else {
          keyLock = 0;
       }
 
-      if (i < LENGTH(aabbTests)) {
-         glhckMaterial *amat = glhckObjectGetMaterial(aabbTests[i].oa);
-         glhckMaterial *bmat = glhckObjectGetMaterial(aabbTests[i].ob);
-
-         if (!kmAABBIntersectsAABB(aabbTests[i].a, aabbTests[i].b)) {
-            textToObject(text, font, textSize, aabbTests[i].oa, "[A] No intersection");
-            textToObject(text, font, textSize, aabbTests[i].ob, "[B] No intersection");
-         } else {
-            textToObject(text, font, textSize, aabbTests[i].oa, "[A] Intersection");
-            textToObject(text, font, textSize, aabbTests[i].ob, "[B] Intersection");
-            glhckMaterialDiffuseb(amat, 255, 0, 0, 255);
-            glhckMaterialDiffuseb(bmat, 255, 0, 0, 255);
-         }
-
-         glhckObjectRender(aabbTests[i].oa);
-         glhckObjectRender(aabbTests[i].ob);
-         glhckMaterialDiffuseb(amat, 0, 0, 255, 255);
-         glhckMaterialDiffuseb(bmat, 0, 255, 0, 255);
+      /* test intersection */
+      switch (primitive) {
+         case PRIMITIVE_AABB:
+            testPrimitive(i, aabbTests, kmAABBIntersectsAABB, expectIntersection, didIntersect);
+            primitiveStr = "AABBvsAABB";
+            break;
+         case PRIMITIVE_AABBE:
+            testPrimitive(i, aabbeTests, kmAABBExtentIntersectsAABBExtent, expectIntersection, didIntersect);
+            primitiveStr = "AABBEvsAABBE";
+            break;
+         case PRIMITIVE_SPHERE:
+            testPrimitive(i, sphereTests, kmSphereIntersectsSphere, expectIntersection, didIntersect);
+            primitiveStr = "SPHEREvsSPHERE";
+            break;
+         default:break;
       }
 
+      /* draw hud */
       glhckTextStash(text, font, textSize, 0, textSize, "colhck - coltest.c", NULL);
       glhckTextStash(text, font, textSize, 0, textSize*2, "press [space] for next test case", NULL);
+      glhckTextStash(text, font, textSize, 0, textSize*4, primitiveStr, NULL);
+      if (expectIntersection) {
+         glhckTextStash(text, font, textSize, 0, textSize*5, "expect intersection: YES", NULL);
+      } else {
+         glhckTextStash(text, font, textSize, 0, textSize*5, "expect intersection: NO", NULL);
+      }
       glhckTextRender(text);
       glhckTextClear(text);
+
+      if (didIntersect == expectIntersection) {
+         glhckTextColorb(text, 0, 255, 0, 255);
+         glhckTextStash(text, font, textSize, 0, textSize*6, "CORRECT", NULL);
+      } else {
+         glhckTextColorb(text, 255, 0, 0, 255);
+         glhckTextStash(text, font, textSize, 0, textSize*6, "WRONG", NULL);
+      }
+      glhckTextRender(text);
+      glhckTextClear(text);
+      glhckTextColorb(text, 255, 255, 255, 255);
 
       glfwSwapBuffers(window);
       glhckRenderClear(GLHCK_DEPTH_BUFFER | GLHCK_COLOR_BUFFER);
