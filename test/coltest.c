@@ -128,7 +128,7 @@ kmBool kmOBBIntersectsOBB(const kmOBB *a, const kmOBB *b)
     * their cross product is (near) null. */
    for (i = 0; i < 3; ++i)
       for (j = 0; j < 3; ++j)
-         absMat.mat[i*j] = abs(mat.mat[i*j]) + kmEpsilon;
+         absMat.mat[i*3+j] = abs(mat.mat[i*3+j]) + kmEpsilon;
 
    /* test axes L = A0, L = A1, L = A2 */
    for (i = 0; i < 3; ++i) {
@@ -341,31 +341,31 @@ static void run(GLFWwindow *window)
    };
    OBBvsOBB obbTests[] = {
       {.a = (&(kmOBB){.aabb = *aabbeTests[0].a,
-            .orientation[0] = {1,1,45},
-            .orientation[1] = {1,1,45},
-            .orientation[2] = {1,1,45}}),
+            .orientation[0] = {1,0,45},
+            .orientation[1] = {0,1,45},
+            .orientation[2] = {0,0,45}}),
        .b = (&(kmOBB){.aabb = *aabbeTests[0].b,
-            .orientation[0] = {1,1,45},
-            .orientation[1] = {1,1,45},
-            .orientation[2] = {1,1,45}}),
+            .orientation[0] = {1,0,45},
+            .orientation[1] = {0,1,45},
+            .orientation[2] = {0,0,45}}),
       .intersection = 0},
       {.a = (&(kmOBB){.aabb = *aabbeTests[1].a,
-            .orientation[0] = {1,1,45},
-            .orientation[1] = {1,1,45},
-            .orientation[2] = {1,1,45}}),
+            .orientation[0] = {1,0,45},
+            .orientation[1] = {0,1,45},
+            .orientation[2] = {0,0,45}}),
        .b = (&(kmOBB){.aabb = *aabbeTests[1].b,
-            .orientation[0] = {1,1,45},
-            .orientation[1] = {1,1,45},
-            .orientation[2] = {1,1,45}}),
+            .orientation[0] = {1,0,45},
+            .orientation[1] = {0,1,45},
+            .orientation[2] = {0,0,45}}),
       .intersection = 0},
       {.a = (&(kmOBB){.aabb = *aabbeTests[2].a,
-            .orientation[0] = {1,1,45},
-            .orientation[1] = {1,1,45},
-            .orientation[2] = {1,1,45}}),
+            .orientation[0] = {1,0,45},
+            .orientation[1] = {0,1,45},
+            .orientation[2] = {0,0,45}}),
        .b = (&(kmOBB){.aabb = *aabbeTests[2].b,
-            .orientation[0] = {1,1,45},
-            .orientation[1] = {1,1,45},
-            .orientation[2] = {1,1,45}}),
+            .orientation[0] = {1,0,45},
+            .orientation[1] = {0,1,45},
+            .orientation[2] = {0,0,45}}),
       .intersection = 1},
    };
    SphereVsSphere sphereTests[] = {
