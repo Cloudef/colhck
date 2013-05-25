@@ -94,20 +94,103 @@ kmBool kmSphereIntersectsSphere(const kmSphere *a, const kmSphere *b)
    return (distance <= radiusSum * radiusSum);
 }
 
-kmBool kmOBBTestOBB(const kmOBB *a, const kmOBB *b)
+kmMat3* kmOBBGetMat3(const kmOBB *pIn, kmMat3 *pOut)
+{
+   int i;
+   for (i = 0; i < 3; ++i) {
+      pOut->mat[i*3+0] = pIn->orientation[i].x;
+      pOut->mat[i*3+1] = pIn->orientation[i].y;
+      pOut->mat[i*3+2] = pIn->orientation[i].z;
+   }
+   return pOut;
+}
+
+kmBool kmOBBIntersectsOBB(const kmOBB *a, const kmOBB *b)
 {
    int i, j;
-   kmMat3 mat;
+   kmScalar ra, rb;
+   kmMat3 mat, absMat;
    kmVec3 tmp, translation;
 
+   /* compute rotation matrix expressing b in a's coordinate frame */
    for (i = 0; i < 3; ++i)
       for (j = 0; j < 3; ++j)
-         mat.mat[i*j] = kmVec3Dot(&a->orientation[i], &b->orientation[j]);
+         mat.mat[i*3+j] = kmVec3Dot(&a->orientation[i], &b->orientation[j]);
 
+   /* bring translations into a's coordinate frame */
    kmVec3Subtract(&tmp, &a->aabb.point, &b->aabb.point);
    translation.x = kmVec3Dot(&tmp, &a->orientation[0]);
    translation.y = kmVec3Dot(&tmp, &a->orientation[2]);
    translation.z = kmVec3Dot(&tmp, &a->orientation[2]);
+
+   /* compute common subexpressions. add in and epsilon term to
+    * counteract arithmetic errors when two edges are parallel and
+    * their cross product is (near) null. */
+   for (i = 0; i < 3; ++i)
+      for (j = 0; j < 3; ++j)
+         absMat.mat[i*j] = abs(mat.mat[i*j]) + kmEpsilon;
+
+   /* test axes L = A0, L = A1, L = A2 */
+   for (i = 0; i < 3; ++i) {
+      ra = (i==0?a->aabb.extent.x:i==1?a->aabb.extent.y:a->aabb.extent.z);
+      rb = b->aabb.extent.x * absMat.mat[i*3+0] + b->aabb.extent.y * absMat.mat[i*3+1] + b->aabb.extent.z * absMat.mat[i*3+2];
+      if (abs((i==0?translation.x:i==1?translation.y:translation.z)) > ra + rb) return KM_FALSE;
+   }
+
+   /* test axes L = B0, L = B1, L = B2 */
+   for (i = 0; i < 3; ++i) {
+      ra = a->aabb.extent.x * absMat.mat[0*3+i] + a->aabb.extent.y * absMat.mat[1*3+i] + a->aabb.extent.z * absMat.mat[2*3+i];
+      rb = (i==0?b->aabb.extent.x:i==1?b->aabb.extent.y:b->aabb.extent.z);
+      if (abs(translation.x * mat.mat[0*3+i] + translation.y * mat.mat[1*3+i] + translation.z * mat.mat[2*3+i]) > ra + rb) return KM_FALSE;
+   }
+
+   /* test axis L = A0 x B0 */
+   ra = a->aabb.extent.y * absMat.mat[2*3+0] + a->aabb.extent.z * absMat.mat[1*3+0];
+   rb = b->aabb.extent.y * absMat.mat[0*3+2] + b->aabb.extent.z * absMat.mat[0*3+1];
+   if (abs(translation.z * mat.mat[1*3+0] - translation.y * mat.mat[2*3+0]) > ra + rb) return KM_FALSE;
+
+   /* test axis L = A0 x B1 */
+   ra = a->aabb.extent.y * absMat.mat[2*3+1] + a->aabb.extent.z * absMat.mat[1*3+1];
+   rb = b->aabb.extent.x * absMat.mat[0*3+2] + b->aabb.extent.z * absMat.mat[0*3+0];
+   if (abs(translation.z * mat.mat[1*3+1] - translation.y * mat.mat[2*3+1]) > ra + rb) return KM_FALSE;
+
+   /* test axis L = A0 x B2 */
+   ra = a->aabb.extent.y * absMat.mat[2*3+2] + a->aabb.extent.z * absMat.mat[1*3+2];
+   rb = b->aabb.extent.x * absMat.mat[0*3+1] + b->aabb.extent.y * absMat.mat[0*3+0];
+   if (abs(translation.z * mat.mat[1*3+2] - translation.y * mat.mat[2*3+2]) > ra + rb) return KM_FALSE;
+
+   /* test axis L = A1 x B0 */
+   ra = a->aabb.extent.x * absMat.mat[2*3+0] + a->aabb.extent.z * absMat.mat[0*3+0];
+   rb = b->aabb.extent.y * absMat.mat[1*3+2] + b->aabb.extent.z * absMat.mat[1*3+1];
+   if (abs(translation.x * mat.mat[2*3+0] - translation.z * mat.mat[0*3+0]) > ra + rb) return KM_FALSE;
+
+   /* test axis L = A1 x B1 */
+   ra = a->aabb.extent.x * absMat.mat[2*3+1] + a->aabb.extent.z * absMat.mat[0*3+1];
+   rb = b->aabb.extent.x * absMat.mat[1*3+2] + b->aabb.extent.z * absMat.mat[1*3+0];
+   if (abs(translation.x * mat.mat[2*3+1] - translation.z * mat.mat[0*3+1]) > ra + rb) return KM_FALSE;
+
+   /* test axis L = A1 x B2 */
+   ra = a->aabb.extent.x * absMat.mat[2*3+2] + a->aabb.extent.z * absMat.mat[0*3+2];
+   rb = b->aabb.extent.x * absMat.mat[1*3+1] + b->aabb.extent.y * absMat.mat[1*3+0];
+   if (abs(translation.x * mat.mat[2*3+2] - translation.z * mat.mat[0*3+2]) > ra + rb) return KM_FALSE;
+
+   /* test axis L = A2 x B0 */
+   ra = a->aabb.extent.x * absMat.mat[1*3+0] + a->aabb.extent.y * absMat.mat[0*3+0];
+   rb = b->aabb.extent.y * absMat.mat[2*3+2] + b->aabb.extent.z * absMat.mat[2*3+1];
+   if (abs(translation.y * mat.mat[0*3+0] - translation.x * mat.mat[1*3+0]) > ra + rb) return KM_FALSE;
+
+   /* test axis L = A2 x B1 */
+   ra = a->aabb.extent.x * absMat.mat[1*3+1] + a->aabb.extent.y * absMat.mat[0*3+1];
+   rb = b->aabb.extent.x * absMat.mat[2*3+2] + b->aabb.extent.z * absMat.mat[2*3+0];
+   if (abs(translation.y * mat.mat[0*3+1] - translation.x * mat.mat[1*3+1]) > ra + rb) return KM_FALSE;
+
+   /* test axis L = A2 x B2 */
+   ra = a->aabb.extent.x * absMat.mat[1*3+2] + a->aabb.extent.y * absMat.mat[0*3+2];
+   rb = b->aabb.extent.x * absMat.mat[2*3+1] + b->aabb.extent.y * absMat.mat[2*3+0];
+   if (abs(translation.y * mat.mat[0*3+2] - translation.x * mat.mat[1*3+2]) > ra + rb) return KM_FALSE;
+
+   /* no seperating axis found */
+   return KM_TRUE;
 }
 
 kmBool kmAABBIntersectsAABB(const kmAABB *a, const kmAABB *b)
@@ -153,6 +236,17 @@ glhckObject* glhckCubeFromKazmathAABBExtent(const kmAABBExtent *aabb)
    return o;
 }
 
+glhckObject* glhckCubeFromKazmathOBB(const kmOBB *obb)
+{
+   kmMat3 mat;
+   kmVec3 rot = {1,1,1};
+   glhckObject *o = glhckCubeFromKazmathAABBExtent(&obb->aabb);
+   kmOBBGetMat3(obb, &mat);
+   kmVec3MultiplyMat3(&rot, &rot, &mat);
+   glhckObjectRotation(o, &rot);
+   return o;
+}
+
 glhckObject* glhckCubeFromKazmathSphere(const kmSphere *sphere)
 {
    glhckObject *o = glhckSphereNew(sphere->radius);
@@ -183,6 +277,8 @@ typedef struct AABBEvsAABBE {
 
 typedef struct OBBvsOBB {
    const kmOBB *a, *b;
+   glhckObject *oa, *ob;
+   char intersection;
 } OBBvsOBB;
 
 typedef struct SphereVsSphere {
@@ -205,12 +301,13 @@ static void run(GLFWwindow *window)
    typedef enum primitiveType {
       PRIMITIVE_AABB,
       PRIMITIVE_AABBE,
+      PRIMITIVE_OBB,
       PRIMITIVE_SPHERE,
       PRIMITIVE_LAST,
    } primitiveType;
 
    primitiveType primitive = PRIMITIVE_AABB;
-   unsigned int i, textSize, font;
+   unsigned int i, textSize, font, testsInPrimitive = 0;
    char keyLock = 0, expectIntersection = 0, didIntersect = 0;
    char *primitiveStr = NULL;
    glhckText *text;
@@ -241,6 +338,17 @@ static void run(GLFWwindow *window)
       {.a = (&(kmAABBExtent){.point = {WIDTH*0.2,HEIGHT/2,0}, .extent = {50,50,0}}),
        .b = (&(kmAABBExtent){.point = {WIDTH*0.2+50,HEIGHT/2+50,0}, .extent = {50,50,0}}),
        .intersection = 1},
+   };
+   OBBvsOBB obbTests[] = {
+      {.a = (&(kmOBB){.aabb = *aabbeTests[0].a,
+            .orientation[0] = {0,0,45},
+            .orientation[1] = {0,0,45},
+            .orientation[2] = {0,0,45}}),
+       .b = (&(kmOBB){.aabb = *aabbeTests[0].b,
+            .orientation[0] = {0,0,45},
+            .orientation[1] = {0,0,45},
+            .orientation[2] = {0,0,45}}),
+      .intersection = 0},
    };
    SphereVsSphere sphereTests[] = {
       {.a = (&(kmSphere){.point = {WIDTH*0.2,HEIGHT/2,0}, .radius = 50}),
@@ -279,8 +387,8 @@ static void run(GLFWwindow *window)
          glhckObjectMaterial(primitives[i].ob, bmat); \
       }
 
-   #define testPrimitive(i, primitives, interFunc, expectIntersection, didIntersect) \
-      if (i < LENGTH(primitives)) {             \
+   #define testPrimitive(i, primitives, interFunc, testsInPrimitive, expectIntersection, didIntersect) \
+      if (i < (testsInPrimitive = LENGTH(primitives))) { \
          glhckMaterial *amat = glhckObjectGetMaterial(primitives[i].oa); \
          glhckMaterial *bmat = glhckObjectGetMaterial(primitives[i].ob); \
          if (!interFunc(primitives[i].a, primitives[i].b)) { \
@@ -304,38 +412,43 @@ static void run(GLFWwindow *window)
    /* create test primitives */
    createPrimitives(i, aabbTests, glhckCubeFromKazmathAABB);
    createPrimitives(i, aabbeTests, glhckCubeFromKazmathAABBExtent);
+   createPrimitives(i, obbTests, glhckCubeFromKazmathOBB);
    createPrimitives(i, sphereTests, glhckCubeFromKazmathSphere);
 
    i = 0;
    while(RUNNING && glfwGetKey(window, GLFW_KEY_ESCAPE) != GLFW_PRESS) {
       glfwPollEvents();
 
+      /* test intersection */
+      switch (primitive) {
+         case PRIMITIVE_AABB:
+            testPrimitive(i, aabbTests, kmAABBIntersectsAABB, testsInPrimitive, expectIntersection, didIntersect);
+            primitiveStr = "AABBvsAABB";
+            break;
+         case PRIMITIVE_AABBE:
+            testPrimitive(i, aabbeTests, kmAABBExtentIntersectsAABBExtent, testsInPrimitive, expectIntersection, didIntersect);
+            primitiveStr = "AABBEvsAABBE";
+            break;
+         case PRIMITIVE_OBB:
+            testPrimitive(i, obbTests, kmOBBIntersectsOBB, testsInPrimitive, expectIntersection, didIntersect);
+            primitiveStr = "OBBvsOBB";
+            break;
+         case PRIMITIVE_SPHERE:
+            testPrimitive(i, sphereTests, kmSphereIntersectsSphere, testsInPrimitive, expectIntersection, didIntersect);
+            primitiveStr = "SPHEREvsSPHERE";
+            break;
+         default:break;
+      }
+
       /* next intersection test */
       if (glfwGetKey(window, GLFW_KEY_SPACE)) {
-         if (!keyLock && ++i >= LENGTH(aabbTests)) {
+         if (!keyLock && ++i >= testsInPrimitive) {
             if (++primitive >= PRIMITIVE_LAST) primitive = PRIMITIVE_AABB;
             i = 0;
          }
          keyLock = 1;
       } else {
          keyLock = 0;
-      }
-
-      /* test intersection */
-      switch (primitive) {
-         case PRIMITIVE_AABB:
-            testPrimitive(i, aabbTests, kmAABBIntersectsAABB, expectIntersection, didIntersect);
-            primitiveStr = "AABBvsAABB";
-            break;
-         case PRIMITIVE_AABBE:
-            testPrimitive(i, aabbeTests, kmAABBExtentIntersectsAABBExtent, expectIntersection, didIntersect);
-            primitiveStr = "AABBEvsAABBE";
-            break;
-         case PRIMITIVE_SPHERE:
-            testPrimitive(i, sphereTests, kmSphereIntersectsSphere, expectIntersection, didIntersect);
-            primitiveStr = "SPHEREvsSPHERE";
-            break;
-         default:break;
       }
 
       /* draw hud */
