@@ -18,6 +18,12 @@ typedef struct kmSphere {
    kmScalar radius;
 } kmSphere;
 
+typedef struct kmCapsule {
+   kmVec3 pointA;
+   kmVec3 pointB;
+   kmScalar radius;
+} kmCapsule;
+
 typedef struct kmEllipse {
    kmVec3 point;
    kmVec3 radius;
@@ -46,6 +52,97 @@ kmVec3* kmVec3Multiply(kmVec3 *pOut, const kmVec3 *pV1, const kmVec3 *pV2)
    pOut->y = pV1->y * pV2->y;
    pOut->z = pV1->z * pV2->z;
    return pOut;
+}
+
+/* compute distance between segment and point */
+kmScalar kmVec3LengthSqSegment(const kmVec3 *a, const kmVec3 *b, const kmVec3 *c)
+{
+   kmVec3 ab, ac, bc;
+   kmScalar e, f;
+   kmVec3Subtract(&ab, b, a);
+   kmVec3Subtract(&ac, c, a);
+   kmVec3Subtract(&bc, c, b);
+   e = kmVec3Dot(&ac, &ab);
+
+   /* handle cases where c projects outside ab */
+   if (e <= 0.0f) return kmVec3LengthSq(&ac);
+
+   f = kmVec3LengthSq(&ab);
+   if (e >= f) return kmVec3LengthSq(&bc);
+
+   /* handle case where c projects onto ab */
+   return kmVec3LengthSq(&ac) - e * e / f;
+}
+
+/* calculate closest squared length from segments */
+kmScalar kmClosestPointFromSegments(const kmVec3 *a1, const kmVec3 *b1, const kmVec3 *a2, const kmVec3 *b2,
+      kmScalar *s, kmScalar *t, kmVec3 *c1, kmVec3 *c2)
+{
+   kmVec3 d1, d2, r, cd;
+   kmScalar a, e, f, c, b, denom;
+   assert(s && t && c1 && c2);
+
+   kmVec3Subtract(&d1, b1, a1);
+   kmVec3Subtract(&d2, b2, a2);
+   kmVec3Subtract(&r, a1, a2);
+   a = kmVec3Dot(&d1, &d1);
+   e = kmVec3Dot(&d2, &d2);
+   f = kmVec3Dot(&d2, &r);
+
+   /* check if either or both segments degenerate into points */
+   if (a <= kmEpsilon && e <= kmEpsilon) {
+      /* both segments degenerate into points */
+      *s = *t = 0.0f;
+      kmVec3Assign(c1, a1);
+      kmVec3Assign(c2, a2);
+      kmVec3Subtract(&cd, c1, c2);
+      return kmVec3Dot(&cd, &cd);
+   }
+   if (a <= kmEpsilon) {
+      /* first segment degenerates into a point */
+      *s = 0.0f;
+      *t = f / e; // s = 0 => t = (b*s + f) / e = f / e
+      *t = kmClamp(*t, 0.0f, 1.0f);
+   } else {
+      c = kmVec3Dot(&d1, &r);
+      if (e <= kmEpsilon) {
+         /* second segment degenerates into a point */
+         *t = 0.0f;
+         *s = kmClamp(-c / a, 0.0f, 1.0f); // t = 0 => s = (b*t - c) / a = -c / a
+      } else {
+         /* the general nondegenerate case starts here */
+         b = kmVec3Dot(&d1, &d2);
+         denom = a*e-b*b; /* always nonnegative */
+
+         /* if segments not parallel, compute closest point on L1 to L2, and
+          * clamp to segment S1. Else pick arbitrary s (here 0) */
+         if (denom != 0.0f) {
+            *s = kmClamp((b*f - c*e) / denom, 0.0f, 1.0f);
+         } else *s = 0.0f;
+
+         /* compute point on L2 closest to S1(s) using
+          * t = Dot((P1+D1*s)-P2,D2) / Dot(D2,D2) = (b*s + f) / e */
+         *t = (b*(*s) + f) / e;
+
+         /* if t in [0,1] done. Else clamp t, recompute s for the new value
+          * of t using s = Dot((P2+D2*t)-P1,D1) / Dot(D1,D1)= (t*b - c) / a
+          * and clamp s to [0, 1] */
+         if (*t < 0.0f) {
+            *t = 0.0f;
+            *s = kmClamp(-c / a, 0.0f, 1.0f);
+         } else if (*t > 1.0f) {
+            *t = 1.0f;
+            *s = kmClamp((b - c) / a, 0.0f, 1.0f);
+         }
+      }
+   }
+
+   kmVec3Add(c1, a1, &d1);
+   kmVec3Scale(c1, c1, *s);
+   kmVec3Add(c2, a2, &d2);
+   kmVec3Scale(c2, c2, *t);
+   kmVec3Subtract(&cd, c1, c2);
+   return kmVec3Dot(&cd, &cd);
 }
 
 static kmVec3* kmVec3Min(kmVec3 *pOut, const kmVec3 *pIn, const kmVec3 *pV1)
@@ -90,6 +187,24 @@ kmBool kmSphereIntersectsSphere(const kmSphere *a, const kmSphere *b)
    kmScalar distance, radiusSum;
    kmVec3Subtract(&vector, &a->point, &b->point);
    distance = kmVec3LengthSq(&vector);
+   radiusSum = a->radius + b->radius;
+   return (distance <= radiusSum * radiusSum);
+}
+
+kmBool kmSphereIntersectsCapsule(const kmSphere *a, const kmCapsule *b)
+{
+   kmScalar distance, radiusSum;
+   distance = kmVec3LengthSqSegment(&b->pointA, &b->pointB, &a->point);
+   radiusSum = a->radius + b->radius;
+   return (distance <= radiusSum * radiusSum);
+}
+
+kmBool kmCapsuleIntersectsCapsule(const kmCapsule *a, const kmCapsule *b)
+{
+   kmScalar s, t;
+   kmVec3 c1, c2;
+   kmScalar distance, radiusSum;
+   distance = kmClosestPointFromSegments(&a->pointA, &a->pointB, &b->pointA, &b->pointB, &s, &s, &c1, &c2);
    radiusSum = a->radius + b->radius;
    return (distance <= radiusSum * radiusSum);
 }
