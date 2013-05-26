@@ -209,6 +209,14 @@ kmBool kmCapsuleIntersectsCapsule(const kmCapsule *a, const kmCapsule *b)
    return (distance <= radiusSum * radiusSum);
 }
 
+kmBool kmSphereIntersectsPlane(const kmSphere *a, const kmPlane *b)
+{
+   kmVec3 n = {b->a, b->b, b->c};
+   kmScalar distance;
+   distance = kmVec3Dot(&a->point, &n) - b->d;
+   return (abs(distance) <= a->radius);
+}
+
 kmMat3* kmOBBGetMat3(const kmOBB *pIn, kmMat3 *pOut)
 {
    int i;
