@@ -243,7 +243,7 @@ kmBool kmOBBIntersectsOBB(const kmOBB *a, const kmOBB *b)
    /* bring translations into a's coordinate frame */
    kmVec3Subtract(&tmp, &a->aabb.point, &b->aabb.point);
    translation.x = kmVec3Dot(&tmp, &a->orientation[0]);
-   translation.y = kmVec3Dot(&tmp, &a->orientation[2]);
+   translation.y = kmVec3Dot(&tmp, &a->orientation[1]);
    translation.z = kmVec3Dot(&tmp, &a->orientation[2]);
 
    /* compute common subexpressions. add in and epsilon term to
