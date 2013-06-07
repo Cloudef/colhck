@@ -1,6 +1,7 @@
 #include <GL/glfw3.h>
 #include <glhck/glhck.h>
 #include <stdlib.h>
+#include <string.h>
 
 /***
  * Kazmath extension
@@ -432,7 +433,7 @@ static void run(GLFWwindow *window)
    primitiveType primitive = PRIMITIVE_AABB;
    unsigned int i, textSize, font, testsInPrimitive = 0;
    char keyLock = 0, expectIntersection = 0, didIntersect = 0;
-   char *primitiveStr = NULL;
+   char *primitiveStr = NULL, basicIntersections = 1;
    glhckText *text;
    kmMat4 ortho;
 
@@ -503,19 +504,6 @@ static void run(GLFWwindow *window)
        .intersection = 1},
    };
 
-   /* lets use 2D projection for easier visualization of data
-    * the text is left-handed, the world in glhck is left-handed, but Y is reversed (positive == UP)
-    * to get same ortho for world as text, we do this
-    *
-    *  TEXT    WORLD/3D
-    *   -y        y
-    * -x | x   -x | x
-    *    y       -y
-    *
-    * */
-   kmMat4OrthographicProjection(&ortho, 0, WIDTH, HEIGHT, 0, -500, 500);
-   glhckRenderProjectionOnly(&ortho);
-
    #define createPrimitives(i, primitives, creatFunc) \
       for (i = 0; i < LENGTH(primitives); ++i) { \
          primitives[i].oa = creatFunc(primitives[i].a); \
@@ -556,29 +544,59 @@ static void run(GLFWwindow *window)
    createPrimitives(i, obbTests, glhckCubeFromKazmathOBB);
    createPrimitives(i, sphereTests, glhckCubeFromKazmathSphere);
 
+   kmAABB fallAABB;
+   kmAABB groundAABB = { .min = { 0, HEIGHT-80, 0 }, .max = { WIDTH, HEIGHT, 0 } };
+   memcpy(&fallAABB, aabbTests[0].a, sizeof(kmAABB));
+
    i = 0;
    while(RUNNING && glfwGetKey(window, GLFW_KEY_ESCAPE) != GLFW_PRESS) {
       glfwPollEvents();
 
-      /* test intersection */
-      switch (primitive) {
-         case PRIMITIVE_AABB:
-            testPrimitive(i, aabbTests, kmAABBIntersectsAABB, testsInPrimitive, expectIntersection, didIntersect);
-            primitiveStr = "AABBvsAABB";
-            break;
-         case PRIMITIVE_AABBE:
-            testPrimitive(i, aabbeTests, kmAABBExtentIntersectsAABBExtent, testsInPrimitive, expectIntersection, didIntersect);
-            primitiveStr = "AABBEvsAABBE";
-            break;
-         case PRIMITIVE_OBB:
-            testPrimitive(i, obbTests, kmOBBIntersectsOBB, testsInPrimitive, expectIntersection, didIntersect);
-            primitiveStr = "OBBvsOBB";
-            break;
-         case PRIMITIVE_SPHERE:
-            testPrimitive(i, sphereTests, kmSphereIntersectsSphere, testsInPrimitive, expectIntersection, didIntersect);
-            primitiveStr = "SPHEREvsSPHERE";
-            break;
-         default:break;
+      if (basicIntersections) {
+         /* test intersection */
+         switch (primitive) {
+            case PRIMITIVE_AABB:
+               testPrimitive(i, aabbTests, kmAABBIntersectsAABB, testsInPrimitive, expectIntersection, didIntersect);
+               primitiveStr = "AABBvsAABB";
+               break;
+            case PRIMITIVE_AABBE:
+               testPrimitive(i, aabbeTests, kmAABBExtentIntersectsAABBExtent, testsInPrimitive, expectIntersection, didIntersect);
+               primitiveStr = "AABBEvsAABBE";
+               break;
+            case PRIMITIVE_OBB:
+               testPrimitive(i, obbTests, kmOBBIntersectsOBB, testsInPrimitive, expectIntersection, didIntersect);
+               primitiveStr = "OBBvsOBB";
+               break;
+            case PRIMITIVE_SPHERE:
+               testPrimitive(i, sphereTests, kmSphereIntersectsSphere, testsInPrimitive, expectIntersection, didIntersect);
+               primitiveStr = "SPHEREvsSPHERE";
+               break;
+            default:break;
+         }
+      } else {
+         glhckObject *object = glhckCubeFromKazmathAABB(&fallAABB);
+         glhckObjectDrawAABB(object, 1);
+         glhckMaterial *mat = glhckMaterialNew(NULL);
+
+         if (kmAABBIntersectsAABB(&fallAABB, &groundAABB)) {
+            glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+         } else {
+            glhckMaterialDiffuseb(mat, 0, 255, 0, 255);
+            fallAABB.min.y += 0.1;
+            fallAABB.max.y += 0.1;
+         }
+         glhckObjectMaterial(object, mat);
+         glhckMaterialFree(mat);
+         glhckObjectRender(object);
+         glhckObjectFree(object);
+
+         object = glhckCubeFromKazmathAABB(&groundAABB);
+         mat = glhckMaterialNew(NULL);
+         glhckMaterialDiffuseb(mat, 255, 255, 255, 255);
+         glhckObjectMaterial(object, mat);
+         glhckMaterialFree(mat);
+         glhckObjectRender(object);
+         glhckObjectFree(object);
       }
 
       /* next intersection test */
@@ -588,32 +606,43 @@ static void run(GLFWwindow *window)
             i = 0;
          }
          keyLock = 1;
+      } else if (glfwGetKey(window, GLFW_KEY_TAB)) {
+         if (!keyLock) basicIntersections = !basicIntersections;
+         memcpy(&fallAABB, aabbTests[0].a, sizeof(kmAABB));
+         keyLock = 1;
       } else {
          keyLock = 0;
       }
 
       /* draw hud */
       glhckTextStash(text, font, textSize, 0, textSize, "colhck - coltest.c", NULL);
-      glhckTextStash(text, font, textSize, 0, textSize*2, "press [space] for next test case", NULL);
-      glhckTextStash(text, font, textSize, 0, textSize*4, primitiveStr, NULL);
-      if (expectIntersection) {
-         glhckTextStash(text, font, textSize, 0, textSize*5, "expect intersection: YES", NULL);
-      } else {
-         glhckTextStash(text, font, textSize, 0, textSize*5, "expect intersection: NO", NULL);
-      }
-      glhckTextRender(text);
-      glhckTextClear(text);
+      glhckTextStash(text, font ,textSize, 0, textSize*2, "press [tab] to switch between primitive/response tests", NULL);
 
-      if (didIntersect == expectIntersection) {
-         glhckTextColorb(text, 0, 255, 0, 255);
-         glhckTextStash(text, font, textSize, 0, textSize*6, "CORRECT", NULL);
+      if (basicIntersections) {
+         glhckTextStash(text, font, textSize, 0, textSize*3, "press [space] for next test case", NULL);
+         glhckTextStash(text, font, textSize, 0, textSize*5, primitiveStr, NULL);
+         if (expectIntersection) {
+            glhckTextStash(text, font, textSize, 0, textSize*6, "expect intersection: YES", NULL);
+         } else {
+            glhckTextStash(text, font, textSize, 0, textSize*6, "expect intersection: NO", NULL);
+         }
+         glhckTextRender(text);
+         glhckTextClear(text);
+
+         if (didIntersect == expectIntersection) {
+            glhckTextColorb(text, 0, 255, 0, 255);
+            glhckTextStash(text, font, textSize, 0, textSize*7, "CORRECT", NULL);
+         } else {
+            glhckTextColorb(text, 255, 0, 0, 255);
+            glhckTextStash(text, font, textSize, 0, textSize*7, "WRONG", NULL);
+         }
+         glhckTextRender(text);
+         glhckTextClear(text);
+         glhckTextColorb(text, 255, 255, 255, 255);
       } else {
-         glhckTextColorb(text, 255, 0, 0, 255);
-         glhckTextStash(text, font, textSize, 0, textSize*6, "WRONG", NULL);
+         glhckTextRender(text);
+         glhckTextClear(text);
       }
-      glhckTextRender(text);
-      glhckTextClear(text);
-      glhckTextColorb(text, 255, 255, 255, 255);
 
       glfwSwapBuffers(window);
       glhckRenderClear(GLHCK_DEPTH_BUFFER | GLHCK_COLOR_BUFFER);
