@@ -371,6 +371,7 @@ typedef enum _CollisionType {
    COLLISION_SPHERE,
    COLLISION_ELLIPSE,
    COLLISION_CAPSULE,
+   COLLISION_LAST,
 } _CollisionType;
 
 typedef struct _CollisionPacket {
@@ -382,6 +383,7 @@ typedef struct _CollisionPacket {
       const kmSphere *sphere;
       const kmEllipse *ellipse;
       const kmCapsule *capsule;
+      const void *any;
    } shape;
 
    /* input data we use to calculate out data */
@@ -413,9 +415,12 @@ typedef struct _CollisionWorld {
 typedef _CollisionWorld CollisionWorld;
 typedef _CollisionPrimitive CollisionPrimitive;
 
-static void _collisionAABBCollideWithAABBPacket(const _CollisionPrimitive *primitive, _CollisionPacket *packet)
+static void _collisionPrimitiveTestWithPacket(const _CollisionPrimitive *primitive, _CollisionPacket *packet, void *testFunction)
 {
-   if (kmAABBIntersectsAABB(primitive->shape.aabb, packet->shape.aabb) != KM_TRUE)
+   typedef int (*_collisionTestFunc)(const void *a, const void *b);
+   _collisionTestFunc test = (_collisionTestFunc)testFunction;
+
+   if (!test(primitive->shape.any, packet->shape.any))
       return;
 
    CollisionOutData outData;
@@ -428,18 +433,18 @@ static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionP
 {
    _CollisionPrimitive *p;
 
-   switch (packet->type) {
-      case COLLISION_AABB: /* AABBvsWORLD */
-         for (p = object->primitives; p; p = p->next) {
-            switch (p->type) {
-               case COLLISION_AABB: /* AABBvsAABB */
-                  _collisionAABBCollideWithAABBPacket(p, packet);
-                  break;
-               default:break;
-            }
-         }
-      break; /* AABBvsWORLD */
-      default:break;
+   void *testFunction[COLLISION_LAST][COLLISION_LAST];
+   memset(testFunction, 0, COLLISION_LAST*COLLISION_LAST*sizeof(void*));
+   testFunction[COLLISION_AABB][COLLISION_AABB] = kmAABBIntersectsAABB;
+   testFunction[COLLISION_AABBE][COLLISION_AABBE] = kmAABBExtentIntersectsAABBExtent;
+   testFunction[COLLISION_SPHERE][COLLISION_SPHERE] = kmSphereIntersectsSphere;
+
+   for (p = object->primitives; p; p = p->next) {
+      if (testFunction[packet->type][p->type]) {
+         _collisionPrimitiveTestWithPacket(p, packet, testFunction[packet->type][p->type]);
+      } else {
+         printf("-!- Test function between primitives not implemented!\n");
+      }
    }
 }
 
