@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define IFDO(f, x) { if (x) f(x); x = NULL; }
+
 /***
  * Kazmath extension
  * When stuff is tested and working
@@ -334,6 +336,242 @@ kmBool kmAABBExtentIntersectsAABBExtent(const kmAABBExtent *a, const kmAABBExten
 }
 
 /***
+ * Collision manager
+ ***/
+
+struct CollisionOutData;
+typedef void (*collisionResponseFunction)(const struct CollisionOutData *collision);
+
+/* public */
+typedef struct CollisionInData {
+   kmVec3 velocity;
+   collisionResponseFunction response;
+   const void *userData;
+} CollisionInData;
+
+typedef struct CollisionOutData {
+   const kmVec3 *velocity;
+   const void *userData;
+} CollisionOutData;
+
+typedef struct CollisionResponseInData {
+   kmVec3 gravity;
+} CollisionReponseInData;
+
+typedef struct CollisionResponseOutData {
+   kmVec3 position;
+   char falling;
+} CollisionResponseOutData;
+
+/* internal */
+typedef enum _CollisionType {
+   COLLISION_AABB,
+   COLLISION_AABBE,
+   COLLISION_OBB,
+   COLLISION_SPHERE,
+   COLLISION_ELLIPSE,
+   COLLISION_CAPSULE,
+} _CollisionType;
+
+typedef struct _CollisionPacket {
+   _CollisionType type;
+   union {
+      const kmAABB *aabb;
+      const kmAABBExtent *aabbe;
+      const kmOBB *obb;
+      const kmSphere *sphere;
+      const kmEllipse *ellipse;
+      const kmCapsule *capsule;
+   } shape;
+
+   /* input data we use to calculate out data */
+   const CollisionInData *inData;
+
+   /* internal data */
+   kmScalar nearestDistance;
+} _CollisionPacket;
+
+typedef struct _CollisionPrimitive {
+   _CollisionType type;
+   union {
+      kmAABB *aabb;
+      kmAABBExtent *aabbe;
+      kmOBB *obb;
+      kmSphere *sphere;
+      kmEllipse *ellipse;
+      kmCapsule *capsule;
+      void *any;
+   } shape;
+   struct _CollisionPrimitive *next;
+} _CollisionPrimitive;
+
+typedef struct _CollisionWorld {
+   _CollisionPrimitive *primitives;
+} _CollisionWorld;
+
+/* public */
+typedef _CollisionWorld CollisionWorld;
+typedef _CollisionPrimitive CollisionPrimitive;
+
+static void _collisionAABBCollideWithAABBPacket(const _CollisionPrimitive *primitive, _CollisionPacket *packet)
+{
+   if (kmAABBIntersectsAABB(primitive->shape.aabb, packet->shape.aabb) != KM_TRUE)
+      return;
+
+   CollisionOutData outData;
+   outData.userData = packet->inData->userData;
+   outData.velocity = &packet->inData->velocity;
+   if (packet->inData->response) packet->inData->response(&outData);
+}
+
+static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionPacket *packet)
+{
+   _CollisionPrimitive *p;
+
+   switch (packet->type) {
+      case COLLISION_AABB: /* AABBvsWORLD */
+         for (p = object->primitives; p; p = p->next) {
+            switch (p->type) {
+               case COLLISION_AABB: /* AABBvsAABB */
+                  _collisionAABBCollideWithAABBPacket(p, packet);
+                  break;
+               default:break;
+            }
+         }
+      break; /* AABBvsWORLD */
+      default:break;
+   }
+}
+
+static void _collisionWorldAddPrimitive(CollisionWorld *object, _CollisionPrimitive *primitive)
+{
+   _CollisionPrimitive *p;
+   assert(object && primitive);
+
+   if (!(p = object->primitives)) {
+      object->primitives = primitive;
+   } else {
+      for (; p && p->next; p = p->next);
+      p->next = primitive;
+   }
+}
+
+CollisionWorld* collisionWorldNew(void)
+{
+   CollisionWorld *object;
+
+   if (!(object = calloc(1, sizeof(CollisionWorld))))
+      goto fail;
+
+   return object;
+
+fail:
+   return NULL;
+}
+
+static void _collisionPrimitiveFree(_CollisionPrimitive *primitive)
+{
+   assert(primitive);
+   switch (primitive->type) {
+      default:
+         IFDO(free, primitive->shape.any);
+         break;
+   }
+   IFDO(free, primitive);
+}
+
+void collisionWorldFree(CollisionWorld *object)
+{
+   _CollisionPrimitive *p, *pn;
+   assert(object);
+
+   for (p = object->primitives; p; p = pn) {
+      pn = p->next;
+      _collisionPrimitiveFree(p);
+   }
+
+   free(object);
+}
+
+CollisionPrimitive* collisionWorldAddEllipse(CollisionWorld *object, const kmEllipse *ellipse)
+{
+   kmEllipse *ellipseCopy = NULL;
+   _CollisionPrimitive *primitive = NULL;
+   assert(object && ellipse);
+
+   if (!(primitive = calloc(1, sizeof(_CollisionPrimitive))))
+      goto fail;
+
+   if (!(ellipseCopy = malloc(sizeof(kmEllipse))))
+      goto fail;
+
+   memcpy(ellipseCopy, ellipse, sizeof(kmEllipse));
+   primitive->type = COLLISION_ELLIPSE;
+   primitive->shape.ellipse = ellipseCopy;
+   _collisionWorldAddPrimitive(object, primitive);
+   return primitive;
+
+fail:
+   IFDO(free, primitive);
+   IFDO(free, ellipseCopy);
+   return NULL;
+}
+
+CollisionPrimitive* collisionWorldAddAABB(CollisionWorld *object, const kmAABB *aabb)
+{
+   kmAABB *aabbCopy = NULL;
+   _CollisionPrimitive *primitive = NULL;
+   assert(object && aabb);
+
+   if (!(primitive = calloc(1, sizeof(_CollisionPrimitive))))
+      goto fail;
+
+   if (!(aabbCopy = malloc(sizeof(kmAABB))))
+      goto fail;
+
+   memcpy(aabbCopy, aabb, sizeof(kmAABB));
+   primitive->type = COLLISION_AABB;
+   primitive->shape.aabb = aabbCopy;
+   _collisionWorldAddPrimitive(object, primitive);
+   return primitive;
+
+fail:
+   IFDO(free, primitive);
+   IFDO(free, aabbCopy);
+   return NULL;
+}
+
+void collisionWorldRemovePrimitive(CollisionWorld *object, CollisionPrimitive *primitive)
+{
+   _CollisionPrimitive *p;
+   assert(object && primitive);
+
+   if (primitive == (p = object->primitives)) {
+      object->primitives = primitive->next;
+   } else {
+      for (; p && p->next != primitive; p = p->next);
+      if (p) p->next = primitive->next;
+      else object->primitives = NULL;
+   }
+
+   _collisionPrimitiveFree(primitive);
+}
+
+void collisionWorldCollideAABB(CollisionWorld *object, const kmAABB *aabb, const CollisionInData *data)
+{
+   static kmVec3 zero = {0,0,0};
+   _CollisionPacket packet;
+   if (kmVec3AreEqual(&data->velocity, &zero))
+      return;
+
+   packet.type = COLLISION_AABB;
+   packet.inData = data;
+   // packet.nearestDistance = FLT_MAX;
+   packet.shape.aabb = aabb;
+   _collisionWorldCollideWithPacket(object, &packet);
+}
+
+/***
  * GLHCK kazmath integration
  * Create glhck objects from kazmath primitives
  * Move to glhck when tested and working
@@ -410,6 +648,22 @@ typedef struct SphereVsSphere {
    glhckObject *oa, *ob;
    char intersection;
 } SphereVsSphere;
+
+typedef struct PrimObjPair {
+   void *primitive;
+   glhckObject *object;
+} PrimObjPair;
+
+static void aabbResponse(const CollisionOutData *collision)
+{
+   glhckObject *object = ((PrimObjPair*)collision->userData)->object;
+   kmAABB *aabb = ((PrimObjPair*)collision->userData)->primitive;
+   glhckMaterial *mat = glhckObjectGetMaterial(object);
+   if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+
+   kmVec3Subtract(&aabb->min, &aabb->min, collision->velocity);
+   kmVec3Subtract(&aabb->max, &aabb->max, collision->velocity);
+}
 
 static void textToObject(glhckText *text, unsigned int font, int size, glhckObject *object, const char *str)
 {
@@ -577,16 +831,25 @@ static void run(GLFWwindow *window)
          glhckObject *object = glhckCubeFromKazmathAABB(&fallAABB);
          glhckObjectDrawAABB(object, 1);
          glhckMaterial *mat = glhckMaterialNew(NULL);
-
-         if (kmAABBIntersectsAABB(&fallAABB, &groundAABB)) {
-            glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
-         } else {
-            glhckMaterialDiffuseb(mat, 0, 255, 0, 255);
-            fallAABB.min.y += 0.1;
-            fallAABB.max.y += 0.1;
-         }
+         glhckMaterialDiffuseb(mat, 0, 255, 0, 255);
          glhckObjectMaterial(object, mat);
          glhckMaterialFree(mat);
+
+         CollisionWorld *world = collisionWorldNew();
+         collisionWorldAddAABB(world, &groundAABB);
+         CollisionInData colData;
+         fallAABB.min.y += 0.1;
+         fallAABB.max.y += 0.1;
+         colData.velocity = (kmVec3){ 0, 0.1, 0 };
+         colData.response = aabbResponse;
+
+         PrimObjPair pair;
+         pair.primitive = &fallAABB;
+         pair.object = object;
+         colData.userData = &pair;
+         collisionWorldCollideAABB(world, &fallAABB, &colData);
+         collisionWorldFree(world);
+
          glhckObjectRender(object);
          glhckObjectFree(object);
 
