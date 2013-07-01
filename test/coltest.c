@@ -1,4 +1,4 @@
-#include <GL/glfw3.h>
+#include <GLFW/glfw3.h>
 #include <glhck/glhck.h>
 #include <stdlib.h>
 #include <string.h>
@@ -148,6 +148,30 @@ kmScalar kmClosestPointFromSegments(const kmVec3 *a1, const kmVec3 *b1, const km
    return kmVec3Dot(&cd, &cd);
 }
 
+static kmScalar kmSqDistPointAABB(const kmVec3 *p, const kmAABB *aabb)
+{
+   kmScalar sqDist = 0.0f;
+   if (p->x < aabb->min.x) sqDist += (aabb->min.x - p->x) * (aabb->min.x - p->x);
+   if (p->x > aabb->max.x) sqDist += (p->x - aabb->max.x) * (p->x - aabb->max.x);
+   if (p->y < aabb->min.y) sqDist += (aabb->min.y - p->y) * (aabb->min.y - p->y);
+   if (p->y > aabb->max.y) sqDist += (p->y - aabb->max.y) * (p->y - aabb->max.y);
+   if (p->z < aabb->min.z) sqDist += (aabb->min.z - p->z) * (aabb->min.z - p->z);
+   if (p->z > aabb->max.z) sqDist += (p->z - aabb->max.z) * (p->z - aabb->max.z);
+   return sqDist;
+}
+
+static kmScalar kmSqDistPointAABBExtent(const kmVec3 *p, const kmAABBExtent *aabbe)
+{
+   kmAABB aabb;
+   aabb.min.x = aabbe->point.x - aabbe->extent.x;
+   aabb.max.x = aabbe->point.x + aabbe->extent.x;
+   aabb.min.y = aabbe->point.y - aabbe->extent.y;
+   aabb.max.y = aabbe->point.y + aabbe->extent.y;
+   aabb.min.z = aabbe->point.z - aabbe->extent.z;
+   aabb.max.z = aabbe->point.z + aabbe->extent.z;
+   return kmSqDistPointAABB(p, &aabb);
+}
+
 static kmVec3* kmVec3Min(kmVec3 *pOut, const kmVec3 *pIn, const kmVec3 *pV1)
 {
    pOut->x = min(pIn->x, pV1->x);
@@ -182,6 +206,18 @@ kmSphere* kmSphereFromAABB(kmSphere *sphere, const kmAABB *aabb)
    sphere->radius = max(sphere->radius, kmAABBDiameterY(aabb));
    sphere->radius = max(sphere->radius, kmAABBDiameterZ(aabb));
    return sphere;
+}
+
+kmBool kmSphereIntersectsAABBExtent(const kmSphere *a, const kmAABBExtent *b)
+{
+   kmScalar distance = kmSqDistPointAABBExtent(&a->point, b);
+   return (distance <= a->radius * a->radius);
+}
+
+kmBool kmSphereIntersectsAABB(const kmSphere *a, const kmAABB *b)
+{
+   kmScalar distance = kmSqDistPointAABB(&a->point, b);
+   return (distance <= a->radius * a->radius);
 }
 
 kmBool kmSphereIntersectsSphere(const kmSphere *a, const kmSphere *b)
@@ -327,12 +363,22 @@ kmBool kmAABBIntersectsAABB(const kmAABB *a, const kmAABB *b)
    return KM_TRUE;
 }
 
+kmBool kmAABBIntersectsSphere(const kmAABB *a, const kmSphere *b)
+{
+   return kmSphereIntersectsAABB(b, a);
+}
+
 kmBool kmAABBExtentIntersectsAABBExtent(const kmAABBExtent *a, const kmAABBExtent *b)
 {
    if (abs(a->point.x - b->point.x) > (a->extent.x + b->extent.x)) return KM_FALSE;
    if (abs(a->point.y - b->point.y) > (a->extent.y + b->extent.y)) return KM_FALSE;
    if (abs(a->point.z - b->point.z) > (a->extent.z + b->extent.z)) return KM_FALSE;
    return KM_TRUE;
+}
+
+kmBool kmAABBExtenetIntersectsSphere(const kmAABBExtent *a, const kmSphere *b)
+{
+   return kmSphereIntersectsAABBExtent(b, a);
 }
 
 /***
@@ -415,13 +461,31 @@ typedef struct _CollisionWorld {
 typedef _CollisionWorld CollisionWorld;
 typedef _CollisionPrimitive CollisionPrimitive;
 
+
+const char* _collisionTypeString(_CollisionType type)
+{
+   switch (type) {
+      case COLLISION_AABB:return "AABB";
+      case COLLISION_AABBE:return "AABBE";
+      case COLLISION_OBB:return "OBB";
+      case COLLISION_SPHERE:return "SPHERE";
+      case COLLISION_ELLIPSE:return "ELLIPSE";
+      case COLLISION_CAPSULE:return "CAPSULE";
+      default:break;
+   }
+
+   return "INVALID TYPE";
+}
+
 static void _collisionPrimitiveTestWithPacket(const _CollisionPrimitive *primitive, _CollisionPacket *packet, void *testFunction)
 {
-   typedef int (*_collisionTestFunc)(const void *a, const void *b);
+   typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
    _collisionTestFunc test = (_collisionTestFunc)testFunction;
 
-   if (!test(primitive->shape.any, packet->shape.any))
+   if (!test(packet->shape.any, primitive->shape.any))
       return;
+
+   // printf("%s COLLIDE %s\n", _collisionTypeString(packet->type), _collisionTypeString(primitive->type));
 
    CollisionOutData outData;
    outData.userData = packet->inData->userData;
@@ -434,10 +498,20 @@ static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionP
    _CollisionPrimitive *p;
 
    void *testFunction[COLLISION_LAST][COLLISION_LAST];
-   memset(testFunction, 0, COLLISION_LAST*COLLISION_LAST*sizeof(void*));
+   memset(testFunction, 0, sizeof(testFunction));
+
+   /* aabb vs. x */
    testFunction[COLLISION_AABB][COLLISION_AABB] = kmAABBIntersectsAABB;
+   testFunction[COLLISION_AABB][COLLISION_SPHERE] = kmAABBIntersectsSphere;
+
+   /* aabbe vs. x */
    testFunction[COLLISION_AABBE][COLLISION_AABBE] = kmAABBExtentIntersectsAABBExtent;
+   testFunction[COLLISION_AABBE][COLLISION_SPHERE] = kmAABBExtenetIntersectsSphere;
+
+   /* sphere vs. x */
    testFunction[COLLISION_SPHERE][COLLISION_SPHERE] = kmSphereIntersectsSphere;
+   testFunction[COLLISION_SPHERE][COLLISION_AABB] = kmSphereIntersectsAABB;
+   testFunction[COLLISION_SPHERE][COLLISION_AABBE] = kmSphereIntersectsAABBExtent;
 
    for (p = object->primitives; p; p = p->next) {
       if (testFunction[packet->type][p->type]) {
@@ -576,6 +650,20 @@ void collisionWorldCollideAABB(CollisionWorld *object, const kmAABB *aabb, const
    _collisionWorldCollideWithPacket(object, &packet);
 }
 
+void collisionWorldCollideSphere(CollisionWorld *object, const kmSphere *sphere, const CollisionInData *data)
+{
+   static kmVec3 zero = {0,0,0};
+   _CollisionPacket packet;
+   if (kmVec3AreEqual(&data->velocity, &zero))
+      return;
+
+   packet.type = COLLISION_SPHERE;
+   packet.inData = data;
+   // packet.nearestDistance = FLT_MAX;
+   packet.shape.sphere = sphere;
+   _collisionWorldCollideWithPacket(object, &packet);
+}
+
 /***
  * GLHCK kazmath integration
  * Create glhck objects from kazmath primitives
@@ -614,7 +702,7 @@ glhckObject* glhckCubeFromKazmathOBB(const kmOBB *obb)
    return o;
 }
 
-glhckObject* glhckCubeFromKazmathSphere(const kmSphere *sphere)
+glhckObject* glhckSphereFromKazmathSphere(const kmSphere *sphere)
 {
    glhckObject *o = glhckSphereNew(sphere->radius);
    glhckObjectPosition(o, &sphere->point);
@@ -665,9 +753,17 @@ static void aabbResponse(const CollisionOutData *collision)
    kmAABB *aabb = ((PrimObjPair*)collision->userData)->primitive;
    glhckMaterial *mat = glhckObjectGetMaterial(object);
    if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
-
    kmVec3Subtract(&aabb->min, &aabb->min, collision->velocity);
    kmVec3Subtract(&aabb->max, &aabb->max, collision->velocity);
+}
+
+static void sphereResponse(const CollisionOutData *collision)
+{
+   glhckObject *object = ((PrimObjPair*)collision->userData)->object;
+   kmSphere *sphere = ((PrimObjPair*)collision->userData)->primitive;
+   glhckMaterial *mat = glhckObjectGetMaterial(object);
+   if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+   kmVec3Subtract(&sphere->point, &sphere->point, collision->velocity);
 }
 
 static void textToObject(glhckText *text, unsigned int font, int size, glhckObject *object, const char *str)
@@ -801,11 +897,13 @@ static void run(GLFWwindow *window)
    createPrimitives(i, aabbTests, glhckCubeFromKazmathAABB);
    createPrimitives(i, aabbeTests, glhckCubeFromKazmathAABBExtent);
    createPrimitives(i, obbTests, glhckCubeFromKazmathOBB);
-   createPrimitives(i, sphereTests, glhckCubeFromKazmathSphere);
+   createPrimitives(i, sphereTests, glhckSphereFromKazmathSphere);
 
    kmAABB fallAABB;
+   kmSphere fallSphere;
    kmAABB groundAABB = { .min = { 0, HEIGHT-80, 0 }, .max = { WIDTH, HEIGHT, 0 } };
    memcpy(&fallAABB, aabbTests[0].a, sizeof(kmAABB));
+   memcpy(&fallSphere, sphereTests[0].b, sizeof(kmSphere));
 
    i = 0;
    while(RUNNING && glfwGetKey(window, GLFW_KEY_ESCAPE) != GLFW_PRESS) {
@@ -833,6 +931,9 @@ static void run(GLFWwindow *window)
             default:break;
          }
       } else {
+         CollisionWorld *world = collisionWorldNew();
+         collisionWorldAddAABB(world, &groundAABB);
+
          glhckObject *object = glhckCubeFromKazmathAABB(&fallAABB);
          glhckObjectDrawAABB(object, 1);
          glhckMaterial *mat = glhckMaterialNew(NULL);
@@ -840,20 +941,38 @@ static void run(GLFWwindow *window)
          glhckObjectMaterial(object, mat);
          glhckMaterialFree(mat);
 
-         CollisionWorld *world = collisionWorldNew();
-         collisionWorldAddAABB(world, &groundAABB);
          CollisionInData colData;
          fallAABB.min.y += 0.1;
          fallAABB.max.y += 0.1;
          colData.velocity = (kmVec3){ 0, 0.1, 0 };
-         colData.response = aabbResponse;
 
+         colData.response = aabbResponse;
          PrimObjPair pair;
          pair.primitive = &fallAABB;
          pair.object = object;
          colData.userData = &pair;
          collisionWorldCollideAABB(world, &fallAABB, &colData);
-         collisionWorldFree(world);
+
+         glhckObjectRender(object);
+         glhckObjectFree(object);
+
+         object = glhckSphereFromKazmathSphere(&fallSphere);
+         glhckObjectDrawAABB(object, 1);
+         mat = glhckMaterialNew(NULL);
+         glhckMaterialDiffuseb(mat, 0, 255, 0, 255);
+         glhckObjectMaterial(object, mat);
+         glhckMaterialFree(mat);
+
+         memset(&colData, 0, sizeof(CollisionInData));
+         fallSphere.point.y += 0.1;
+         colData.velocity = (kmVec3){ 0, 0.1, 0 };
+         colData.response = sphereResponse;
+
+         memset(&pair, 0, sizeof(PrimObjPair));
+         pair.primitive = &fallSphere;
+         pair.object = object;
+         colData.userData = &pair;
+         collisionWorldCollideSphere(world, &fallSphere, &colData);
 
          glhckObjectRender(object);
          glhckObjectFree(object);
@@ -865,6 +984,8 @@ static void run(GLFWwindow *window)
          glhckMaterialFree(mat);
          glhckObjectRender(object);
          glhckObjectFree(object);
+
+         collisionWorldFree(world);
       }
 
       /* next intersection test */
@@ -877,6 +998,7 @@ static void run(GLFWwindow *window)
       } else if (glfwGetKey(window, GLFW_KEY_TAB)) {
          if (!keyLock) basicIntersections = !basicIntersections;
          memcpy(&fallAABB, aabbTests[0].a, sizeof(kmAABB));
+         memcpy(&fallSphere, sphereTests[0].b, sizeof(kmSphere));
          keyLock = 1;
       } else {
          keyLock = 0;
