@@ -41,6 +41,14 @@ typedef struct kmTriangle {
    kmVec3 v1, v2, v3;
 } kmTriangle;
 
+kmAABBExtent* kmAABBToAABBExtent(kmAABBExtent* pOut, const kmAABB* aabb)
+{
+  kmVec3Subtract(&pOut->extent, &aabb->max, &aabb->min);
+  kmVec3Scale(&pOut->extent, &pOut->extent, 0.5f);
+  kmVec3Add(&pOut->point, &aabb->min, &pOut->extent);
+  return pOut;
+}
+
 kmVec3* kmVec3Divide(kmVec3 *pOut, const kmVec3 *pV1, const kmVec3 *pV2)
 {
    pOut->x = pV1->x / pV2->x;
@@ -376,9 +384,45 @@ kmBool kmAABBExtentIntersectsAABBExtent(const kmAABBExtent *a, const kmAABBExten
    return KM_TRUE;
 }
 
-kmBool kmAABBExtenetIntersectsSphere(const kmAABBExtent *a, const kmSphere *b)
+kmBool kmAABBExtentIntersectsSphere(const kmAABBExtent *a, const kmSphere *b)
 {
    return kmSphereIntersectsAABBExtent(b, a);
+}
+
+kmBool kmAABBIntersectsAABBExtent(const kmAABB *a, const kmAABBExtent *b)
+{
+   if (a->min.x > b->point.x + b->extent.x || a->max.x < b->point.x - b->extent.x) return KM_FALSE;
+   if (a->min.y > b->point.y + b->extent.y || a->max.y < b->point.y - b->extent.y) return KM_FALSE;
+   if (a->min.z > b->point.z + b->extent.z || a->max.z < b->point.z - b->extent.z) return KM_FALSE;
+   return KM_TRUE;
+}
+
+kmBool kmAABBExtentIntersectsAABB(const kmAABBExtent *a, const kmAABB *b)
+{
+  return kmAABBIntersectsAABBExtent(b, a);
+}
+
+kmBool kmAABBExtentIntersectsOBB(const kmAABBExtent *a, const kmOBB* b)
+{
+  kmOBB obb = {*a, {0,0,0}};
+  return kmOBBIntersectsOBB(&obb, b);
+}
+
+kmBool kmOBBIntersectsAABBExtent(const kmOBB *a, const kmAABBExtent* b)
+{
+  return kmAABBExtentIntersectsOBB(b, a);
+}
+
+kmBool kmAABBIntersectsOBB(const kmAABB *a, const kmOBB* b)
+{
+  kmAABBExtent aabbExtent;
+  kmAABBToAABBExtent(&aabbExtent, a);
+  return kmAABBExtentIntersectsOBB(&aabbExtent, b);
+}
+
+kmBool kmOBBIntersectsAABB(const kmOBB *a, const kmAABB* b)
+{
+  return kmAABBIntersectsOBB(b, a);
 }
 
 /***
@@ -506,7 +550,7 @@ static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionP
 
    /* aabbe vs. x */
    testFunction[COLLISION_AABBE][COLLISION_AABBE] = kmAABBExtentIntersectsAABBExtent;
-   testFunction[COLLISION_AABBE][COLLISION_SPHERE] = kmAABBExtenetIntersectsSphere;
+   testFunction[COLLISION_AABBE][COLLISION_SPHERE] = kmAABBExtentIntersectsSphere;
 
    /* sphere vs. x */
    testFunction[COLLISION_SPHERE][COLLISION_SPHERE] = kmSphereIntersectsSphere;
