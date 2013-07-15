@@ -49,6 +49,21 @@ kmAABBExtent* kmAABBToAABBExtent(kmAABBExtent* pOut, const kmAABB* aabb)
   return pOut;
 }
 
+kmAABB* kmAABBExtentToAABB(kmAABB* pOut, const kmAABBExtent* aabbExtent)
+{
+  kmVec3Subtract(&pOut->min, &aabbExtent->point, &aabbExtent->extent);
+  kmVec3Add(&pOut->max, &aabbExtent->point, &aabbExtent->extent);
+  return pOut;
+}
+
+kmVec3* kmVec3Abs(kmVec3 *pOut, const kmVec3 *pV1)
+{
+   pOut->x = fabs(pV1->x);
+   pOut->y = fabs(pV1->y);
+   pOut->z = fabs(pV1->z);
+   return pOut;
+}
+
 kmVec3* kmVec3Divide(kmVec3 *pOut, const kmVec3 *pV1, const kmVec3 *pV2)
 {
    pOut->x = pV1->x / pV2->x;
@@ -83,6 +98,14 @@ kmScalar kmVec3LengthSqSegment(const kmVec3 *a, const kmVec3 *b, const kmVec3 *c
 
    /* handle case where c projects onto ab */
    return kmVec3LengthSq(&ac) - e * e / f;
+}
+
+kmBool kmAABBExtentContainsPoint(const kmAABBExtent* a, const kmVec3* p)
+{
+  if(p->x < a->point.x - a->extent.x || p->x > a->point.x + a->extent.x) return KM_FALSE;
+  if(p->y < a->point.y - a->extent.y || p->y > a->point.y + a->extent.y) return KM_FALSE;
+  if(p->z < a->point.z - a->extent.z || p->z > a->point.z + a->extent.z) return KM_FALSE;
+  return KM_TRUE;
 }
 
 /* calculate closest squared length from segments */
@@ -180,6 +203,44 @@ static kmScalar kmSqDistPointAABBExtent(const kmVec3 *p, const kmAABBExtent *aab
    return kmSqDistPointAABB(p, &aabb);
 }
 
+static kmBool kmAABBIntersectsLine(const kmAABB* a, const kmVec3* p1, const kmVec3* p2)
+{
+   kmAABBExtent aabbe;
+   kmAABBToAABBExtent(&aabbe, a);
+   return kmAABBExtentIntersectsLine(&aabbe, p1, p2);
+}
+
+static kmBool kmAABBExtentIntersectsLine(const kmAABBExtent* a, const kmVec3* p1, const kmVec3* p2)
+{
+   /* d = (p2 - p1) * 0.5 */
+   kmVec3 d;
+   kmVec3Subtract(&d, p2, p1);
+   kmVec3Scale(&d, &d, 0.5f);
+
+   /* c = p1 + d - (min + max) * 0.5; */
+   kmVec3 c;
+   kmVec3Add(&c, &a->min, &a->max);
+   kmVec3Scale(&c, &c, 0.5f);
+   kmVec3Subtract(&c, &d, &c);
+   kmVec3Add(&c, &c, p1);
+
+   /* ad = abs(d) */
+   kmVec3 ad;
+   kmVec3Abs(&ad, &d);
+
+   /* alias for clarity */
+   kmVec3* e = &a->extent;
+
+   if (fabs(c.x) > e->x + ad.x) return KM_FALSE;
+   if (fabs(c.y) > e->y + ad.y) return KM_FALSE;
+   if (fabs(c.z) > e->z + ad.z) return KM_FALSE;
+   if (fabs(d.y * c.z - d.z * c.y) > e->y * ad.z + e->z * ad.y + kmEpsilon) return KM_FALSE;
+   if (fabs(d.z * c.x - d.x * c.z) > e->z * ad.x + e->x * ad.z + kmEpsilon) return KM_FALSE;
+   if (fabs(d.x * c.y - d.y * c.x) > e->x * ad.y + e->y * ad.x + kmEpsilon) return KM_FALSE;
+
+   return KM_TRUE;
+}
+
 static kmVec3* kmVec3Min(kmVec3 *pOut, const kmVec3 *pIn, const kmVec3 *pV1)
 {
    pOut->x = min(pIn->x, pV1->x);
@@ -218,6 +279,7 @@ kmSphere* kmSphereFromAABB(kmSphere *sphere, const kmAABB *aabb)
 
 kmBool kmSphereIntersectsAABBExtent(const kmSphere *a, const kmAABBExtent *b)
 {
+   if(kmAABBExtentContainsPoint(b, &a->point)) return KM_TRUE;
    kmScalar distance = kmSqDistPointAABBExtent(&a->point, b);
    return (distance <= a->radius * a->radius);
 }
@@ -399,30 +461,71 @@ kmBool kmAABBIntersectsAABBExtent(const kmAABB *a, const kmAABBExtent *b)
 
 kmBool kmAABBExtentIntersectsAABB(const kmAABBExtent *a, const kmAABB *b)
 {
-  return kmAABBIntersectsAABBExtent(b, a);
+   return kmAABBIntersectsAABBExtent(b, a);
 }
 
-kmBool kmAABBExtentIntersectsOBB(const kmAABBExtent *a, const kmOBB* b)
+kmBool kmAABBExtentIntersectsOBB(const kmAABBExtent *a, const kmOBB *b)
 {
-  kmOBB obb = {*a, {0,0,0}};
-  return kmOBBIntersectsOBB(&obb, b);
+   kmOBB obb = {*a, {0,0,0}};
+   return kmOBBIntersectsOBB(&obb, b);
 }
 
-kmBool kmOBBIntersectsAABBExtent(const kmOBB *a, const kmAABBExtent* b)
+kmBool kmOBBIntersectsAABBExtent(const kmOBB *a, const kmAABBExtent *b)
 {
-  return kmAABBExtentIntersectsOBB(b, a);
+   return kmAABBExtentIntersectsOBB(b, a);
 }
 
-kmBool kmAABBIntersectsOBB(const kmAABB *a, const kmOBB* b)
+kmBool kmAABBIntersectsOBB(const kmAABB *a, const kmOBB *b)
 {
-  kmAABBExtent aabbExtent;
-  kmAABBToAABBExtent(&aabbExtent, a);
-  return kmAABBExtentIntersectsOBB(&aabbExtent, b);
+   kmAABBExtent aabbExtent;
+   kmAABBToAABBExtent(&aabbExtent, a);
+   return kmAABBExtentIntersectsOBB(&aabbExtent, b);
 }
 
-kmBool kmOBBIntersectsAABB(const kmOBB *a, const kmAABB* b)
+kmBool kmOBBIntersectsAABB(const kmOBB *a, const kmAABB *b)
 {
-  return kmAABBIntersectsOBB(b, a);
+   return kmAABBIntersectsOBB(b, a);
+}
+
+kmBool kmAABBExtentIntersectsCapsule(const kmAABBExtent *a, const kmCapsule *b)
+{
+   /* Quick rejection test using the smallest (quickly calculatable) capsule the AABB fits inside*/
+   kmCapsule smallestContainingCapsule = {{0, 0, 0}, {0, 0, 0}, 0};
+
+   if(a->extent.x >= a->extent.y && a->extent.x >= a->extent.z)
+   {
+      smallestContainingCapsule.radius = sqrt(a->extent.y * a->extent.y + a->extent.z * a->extent.z);
+      smallestContainingCapsule.pointA.x = a->point.x - a->extent.x;
+      smallestContainingCapsule.pointB.x = a->point.x + a->extent.x;
+   }
+   else if(a->extent.y >= a->extent.x && a->extent.y >= a->extent.z)
+   {
+      smallestContainingCapsule.radius = sqrt(a->extent.x * a->extent.x + a->extent.z * a->extent.z);
+      smallestContainingCapsule.pointA.y = a->point.y - a->extent.y;
+      smallestContainingCapsule.pointB.y = a->point.y + a->extent.y;
+   }
+   else
+   {
+      smallestContainingCapsule.radius = sqrt(a->extent.x * a->extent.x + a->extent.y * a->extent.y);
+      smallestContainingCapsule.pointA.z = a->point.z - a->extent.z;
+      smallestContainingCapsule.pointB.z = a->point.z + a->extent.z;
+   }
+
+   if(!kmCapsuleIntersectsCapsule(&smallestContainingCapsule, b)) return KM_FALSE;
+
+   /* Quick acceptance test for capsule line */
+   if(kmAABBExtentIntersectsLine(a, b->pointA, b->pointB)) return KM_TRUE;
+
+   /* Quick acceptance tests for capsule end spheres */
+   kmSphere spa = {b->pointA, b->radius};
+   if(kmAABBExtentIntersectsSphere(a, &spa)) return KM_TRUE;
+
+   kmSphere spb = {b->pointB, b->radius};
+   if(kmAABBExtentIntersectsSphere(a, &spb)) return KM_TRUE;
+
+
+
+   return KM_TRUE;
 }
 
 /***
