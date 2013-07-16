@@ -203,13 +203,6 @@ static kmScalar kmSqDistPointAABBExtent(const kmVec3 *p, const kmAABBExtent *aab
    return kmSqDistPointAABB(p, &aabb);
 }
 
-static kmBool kmAABBIntersectsLine(const kmAABB* a, const kmVec3* p1, const kmVec3* p2)
-{
-   kmAABBExtent aabbe;
-   kmAABBToAABBExtent(&aabbe, a);
-   return kmAABBExtentIntersectsLine(&aabbe, p1, p2);
-}
-
 static kmBool kmAABBExtentIntersectsLine(const kmAABBExtent* a, const kmVec3* p1, const kmVec3* p2)
 {
    /* d = (p2 - p1) * 0.5 */
@@ -219,7 +212,9 @@ static kmBool kmAABBExtentIntersectsLine(const kmAABBExtent* a, const kmVec3* p1
 
    /* c = p1 + d - (min + max) * 0.5; */
    kmVec3 c;
-   kmVec3Add(&c, &a->min, &a->max);
+   kmVec3 min;
+   kmVec3Scale(&min, &a->extent, -1.0f);
+   kmVec3Add(&c, &min, &a->extent);
    kmVec3Scale(&c, &c, 0.5f);
    kmVec3Subtract(&c, &d, &c);
    kmVec3Add(&c, &c, p1);
@@ -229,7 +224,7 @@ static kmBool kmAABBExtentIntersectsLine(const kmAABBExtent* a, const kmVec3* p1
    kmVec3Abs(&ad, &d);
 
    /* alias for clarity */
-   kmVec3* e = &a->extent;
+   const kmVec3* e = &a->extent;
 
    if (fabs(c.x) > e->x + ad.x) return KM_FALSE;
    if (fabs(c.y) > e->y + ad.y) return KM_FALSE;
@@ -239,6 +234,13 @@ static kmBool kmAABBExtentIntersectsLine(const kmAABBExtent* a, const kmVec3* p1
    if (fabs(d.x * c.y - d.y * c.x) > e->x * ad.y + e->y * ad.x + kmEpsilon) return KM_FALSE;
 
    return KM_TRUE;
+}
+
+static kmBool kmAABBIntersectsLine(const kmAABB* a, const kmVec3* p1, const kmVec3* p2)
+{
+   kmAABBExtent aabbe;
+   kmAABBToAABBExtent(&aabbe, a);
+   return kmAABBExtentIntersectsLine(&aabbe, p1, p2);
 }
 
 static kmVec3* kmVec3Min(kmVec3 *pOut, const kmVec3 *pIn, const kmVec3 *pV1)
@@ -514,7 +516,7 @@ kmBool kmAABBExtentIntersectsCapsule(const kmAABBExtent *a, const kmCapsule *b)
    if(!kmCapsuleIntersectsCapsule(&smallestContainingCapsule, b)) return KM_FALSE;
 
    /* Quick acceptance test for capsule line */
-   if(kmAABBExtentIntersectsLine(a, b->pointA, b->pointB)) return KM_TRUE;
+   if(kmAABBExtentIntersectsLine(a, &b->pointA, &b->pointB)) return KM_TRUE;
 
    /* Quick acceptance tests for capsule end spheres */
    kmSphere spa = {b->pointA, b->radius};
