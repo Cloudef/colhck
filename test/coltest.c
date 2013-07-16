@@ -2,6 +2,7 @@
 #include <glhck/glhck.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #define IFDO(f, x) { if (x) f(x); x = NULL; }
 
