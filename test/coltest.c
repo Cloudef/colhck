@@ -653,15 +653,24 @@ static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionP
    /* aabb vs. x */
    testFunction[COLLISION_AABB][COLLISION_AABB] = kmAABBIntersectsAABB;
    testFunction[COLLISION_AABB][COLLISION_SPHERE] = kmAABBIntersectsSphere;
+   testFunction[COLLISION_AABB][COLLISION_AABBE] = kmAABBIntersectsAABBExtent;
+   testFunction[COLLISION_AABB][COLLISION_OBB] = kmAABBIntersectsOBB;
 
    /* aabbe vs. x */
    testFunction[COLLISION_AABBE][COLLISION_AABBE] = kmAABBExtentIntersectsAABBExtent;
    testFunction[COLLISION_AABBE][COLLISION_SPHERE] = kmAABBExtentIntersectsSphere;
+   testFunction[COLLISION_AABBE][COLLISION_AABB] = kmAABBExtentIntersectsAABB;
+   testFunction[COLLISION_AABBE][COLLISION_OBB] = kmAABBExtentIntersectsOBB;
 
    /* sphere vs. x */
    testFunction[COLLISION_SPHERE][COLLISION_SPHERE] = kmSphereIntersectsSphere;
    testFunction[COLLISION_SPHERE][COLLISION_AABB] = kmSphereIntersectsAABB;
    testFunction[COLLISION_SPHERE][COLLISION_AABBE] = kmSphereIntersectsAABBExtent;
+
+   /* obb vs. x */
+   testFunction[COLLISION_OBB][COLLISION_OBB] = kmOBBIntersectsOBB;
+   testFunction[COLLISION_OBB][COLLISION_AABB] = kmOBBIntersectsAABB;
+   testFunction[COLLISION_OBB][COLLISION_AABBE] = kmOBBIntersectsAABBExtent;
 
    for (p = object->primitives; p; p = p->next) {
       if (testFunction[packet->type][p->type]) {
