@@ -1298,6 +1298,7 @@ static void run(GLFWwindow *window)
             }
          }
 
+         i = 0;
          keyLock = 1;
       } else {
          keyLock = 0;
