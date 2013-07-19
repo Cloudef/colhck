@@ -469,7 +469,7 @@ kmBool kmAABBExtentIntersectsAABB(const kmAABBExtent *a, const kmAABB *b)
 
 kmBool kmAABBExtentIntersectsOBB(const kmAABBExtent *a, const kmOBB *b)
 {
-   kmOBB obb = {*a, {0,0,0}};
+   kmOBB obb = {*a, {{1,0,0},{0,1,0},{0,0,1}}};
    return kmOBBIntersectsOBB(&obb, b);
 }
 
@@ -681,6 +681,17 @@ static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionP
    }
 }
 
+static void _collisionPrimitiveFree(_CollisionPrimitive *primitive)
+{
+   assert(primitive);
+   switch (primitive->type) {
+      default:
+         IFDO(free, primitive->shape.any);
+         break;
+   }
+   IFDO(free, primitive);
+}
+
 static void _collisionWorldAddPrimitive(CollisionWorld *object, _CollisionPrimitive *primitive)
 {
    _CollisionPrimitive *p;
@@ -705,17 +716,6 @@ CollisionWorld* collisionWorldNew(void)
 
 fail:
    return NULL;
-}
-
-static void _collisionPrimitiveFree(_CollisionPrimitive *primitive)
-{
-   assert(primitive);
-   switch (primitive->type) {
-      default:
-         IFDO(free, primitive->shape.any);
-         break;
-   }
-   IFDO(free, primitive);
 }
 
 void collisionWorldFree(CollisionWorld *object)
@@ -809,6 +809,34 @@ void collisionWorldCollideAABB(CollisionWorld *object, const kmAABB *aabb, const
    _collisionWorldCollideWithPacket(object, &packet);
 }
 
+void collisionWorldCollideAABBExtent(CollisionWorld *object, const kmAABBExtent *aabbe, const CollisionInData *data)
+{
+   static kmVec3 zero = {0,0,0};
+   _CollisionPacket packet;
+   if (kmVec3AreEqual(&data->velocity, &zero))
+      return;
+
+   packet.type = COLLISION_AABBE;
+   packet.inData = data;
+   // packet.nearestDistance = FLT_MAX;
+   packet.shape.aabbe = aabbe;
+   _collisionWorldCollideWithPacket(object, &packet);
+}
+
+void collisionWorldCollideOBB(CollisionWorld *object, const kmOBB *obb, const CollisionInData *data)
+{
+   static kmVec3 zero = {0,0,0};
+   _CollisionPacket packet;
+   if (kmVec3AreEqual(&data->velocity, &zero))
+      return;
+
+   packet.type = COLLISION_OBB;
+   packet.inData = data;
+   // packet.nearestDistance = FLT_MAX;
+   packet.shape.obb = obb;
+   _collisionWorldCollideWithPacket(object, &packet);
+}
+
 void collisionWorldCollideSphere(CollisionWorld *object, const kmSphere *sphere, const CollisionInData *data)
 {
    static kmVec3 zero = {0,0,0};
@@ -877,6 +905,14 @@ static void windowCloseCallback(GLFWwindow *window)
    RUNNING = 0;
 }
 
+typedef enum PrimitiveType {
+   PRIMITIVE_AABB,
+   PRIMITIVE_AABBE,
+   PRIMITIVE_OBB,
+   PRIMITIVE_SPHERE,
+   PRIMITIVE_LAST,
+} PrimitiveType;
+
 typedef struct AABBvsAABB {
    const kmAABB *a, *b;
    glhckObject *oa, *ob;
@@ -901,10 +937,43 @@ typedef struct SphereVsSphere {
    char intersection;
 } SphereVsSphere;
 
+typedef struct ResponseTest {
+   PrimitiveType type;
+   union {
+      kmAABB *aabb;
+      kmAABBExtent *aabbe;
+      kmOBB *obb;
+      kmSphere *sphere;
+      void *any;
+   } shape;
+   collisionResponseFunction response;
+} ResponseTest;
+
 typedef struct PrimObjPair {
    void *primitive;
    glhckObject *object;
 } PrimObjPair;
+
+static void aabbFall(kmAABB *aabb)
+{
+   aabb->min.y += 0.1;
+   aabb->max.y += 0.1;
+}
+
+static void aabbeFall(kmAABBExtent *aabbe)
+{
+   aabbe->point.y += 0.1;
+}
+
+static void obbFall(kmOBB *obb)
+{
+   aabbeFall(&obb->aabb);
+}
+
+static void sphereFall(kmSphere *sphere)
+{
+   sphere->point.y += 0.1;
+}
 
 static void aabbResponse(const CollisionOutData *collision)
 {
@@ -914,6 +983,22 @@ static void aabbResponse(const CollisionOutData *collision)
    if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
    kmVec3Subtract(&aabb->min, &aabb->min, collision->velocity);
    kmVec3Subtract(&aabb->max, &aabb->max, collision->velocity);
+}
+
+static void aabbeResponse(const CollisionOutData *collision)
+{
+   glhckObject *object = ((PrimObjPair*)collision->userData)->object;
+   kmAABBExtent *aabbe = ((PrimObjPair*)collision->userData)->primitive;
+   glhckMaterial *mat = glhckObjectGetMaterial(object);
+   if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+   kmVec3Subtract(&aabbe->point, &aabbe->point, collision->velocity);
+}
+
+static void obbResponse(const CollisionOutData *collision)
+{
+   kmOBB *obb = ((PrimObjPair*)collision->userData)->primitive;
+   ((PrimObjPair*)collision->userData)->primitive = &obb->aabb;
+   aabbeResponse(collision);
 }
 
 static void sphereResponse(const CollisionOutData *collision)
@@ -936,15 +1021,7 @@ static void textToObject(glhckText *text, unsigned int font, int size, glhckObje
 
 static void run(GLFWwindow *window)
 {
-   typedef enum primitiveType {
-      PRIMITIVE_AABB,
-      PRIMITIVE_AABBE,
-      PRIMITIVE_OBB,
-      PRIMITIVE_SPHERE,
-      PRIMITIVE_LAST,
-   } primitiveType;
-
-   primitiveType primitive = PRIMITIVE_AABB;
+   PrimitiveType primitive = PRIMITIVE_AABB;
    unsigned int i, textSize, font, testsInPrimitive = 0;
    char keyLock = 0, expectIntersection = 0, didIntersect = 0;
    char *primitiveStr = NULL, basicIntersections = 1;
@@ -1018,6 +1095,41 @@ static void run(GLFWwindow *window)
        .intersection = 1},
    };
 
+   ResponseTest responseTests[] = {
+      {.type = PRIMITIVE_AABB,
+       .shape.aabb = (&(kmAABB){.min = {WIDTH*0.2-50,HEIGHT/2-50,0}, .max = {WIDTH*0.2+50,HEIGHT/2+50,0}}),
+       .response = aabbResponse},
+      {.type = PRIMITIVE_AABBE,
+       .shape.aabbe = (&(kmAABBExtent){.point = {WIDTH*0.4,HEIGHT/2,0}, .extent = {50,50,0}}),
+       .response = aabbeResponse},
+      {.type = PRIMITIVE_OBB,
+       .shape.obb = (&(kmOBB){.aabb = {.point = {WIDTH*0.6,HEIGHT/2,0}, .extent = {50,50,0}},
+            .orientation[0] = {1,0,45},
+            .orientation[1] = {0,1,45},
+            .orientation[2] = {0,0,45}}),
+       .response = obbResponse},
+      {.type = PRIMITIVE_SPHERE,
+       .shape.sphere = (&(kmSphere){.point = {WIDTH*0.8,HEIGHT/2,0}, .radius = 50}),
+       .response = sphereResponse},
+   };
+   ResponseTest responseTestsInitial[] = {
+      {.type = PRIMITIVE_AABB,
+       .shape.aabb = (&(kmAABB){.min = {WIDTH*0.2-50,HEIGHT/2-50,0}, .max = {WIDTH*0.2+50,HEIGHT/2+50,0}}),
+       .response = aabbResponse},
+      {.type = PRIMITIVE_AABBE,
+       .shape.aabbe = (&(kmAABBExtent){.point = {WIDTH*0.4,HEIGHT/2,0}, .extent = {50,50,0}}),
+       .response = aabbeResponse},
+      {.type = PRIMITIVE_OBB,
+       .shape.obb = (&(kmOBB){.aabb = {.point = {WIDTH*0.6,HEIGHT/2,0}, .extent = {50,50,0}},
+            .orientation[0] = {1,0,45},
+            .orientation[1] = {0,1,45},
+            .orientation[2] = {0,0,45}}),
+       .response = obbResponse},
+      {.type = PRIMITIVE_SPHERE,
+       .shape.sphere = (&(kmSphere){.point = {WIDTH*0.8,HEIGHT/2,0}, .radius = 50}),
+       .response = sphereResponse},
+   };
+
    #define createPrimitives(i, primitives, creatFunc) \
       for (i = 0; i < LENGTH(primitives); ++i) { \
          primitives[i].oa = creatFunc(primitives[i].a); \
@@ -1057,12 +1169,7 @@ static void run(GLFWwindow *window)
    createPrimitives(i, aabbeTests, glhckCubeFromKazmathAABBExtent);
    createPrimitives(i, obbTests, glhckCubeFromKazmathOBB);
    createPrimitives(i, sphereTests, glhckSphereFromKazmathSphere);
-
-   kmAABB fallAABB;
-   kmSphere fallSphere;
    kmAABB groundAABB = { .min = { 0, HEIGHT-80, 0 }, .max = { WIDTH, HEIGHT, 0 } };
-   memcpy(&fallAABB, aabbTests[0].a, sizeof(kmAABB));
-   memcpy(&fallSphere, sphereTests[0].b, sizeof(kmSphere));
 
    i = 0;
    while(RUNNING && glfwGetKey(window, GLFW_KEY_ESCAPE) != GLFW_PRESS) {
@@ -1093,57 +1200,72 @@ static void run(GLFWwindow *window)
          CollisionWorld *world = collisionWorldNew();
          collisionWorldAddAABB(world, &groundAABB);
 
-         glhckObject *object = glhckCubeFromKazmathAABB(&fallAABB);
-         glhckObjectDrawAABB(object, 1);
+         for (i = 0; i != LENGTH(responseTests); ++i) {
+            ResponseTest *test = &responseTests[i];
+            glhckObject *object = NULL;
+
+            switch (test->type) {
+               case PRIMITIVE_AABB:
+                  object = glhckCubeFromKazmathAABB(test->shape.aabb);
+                  aabbFall(test->shape.aabb);
+                  break;
+               case PRIMITIVE_AABBE:
+                  object = glhckCubeFromKazmathAABBExtent(test->shape.aabbe);
+                  aabbeFall(test->shape.aabbe);
+                  break;
+               case PRIMITIVE_OBB:
+                  object = glhckCubeFromKazmathOBB(test->shape.obb);
+                  obbFall(test->shape.obb);
+                  break;
+               case PRIMITIVE_SPHERE:
+                  object = glhckSphereFromKazmathSphere(test->shape.sphere);
+                  sphereFall(test->shape.sphere);
+                  break;
+               default:break;
+            }
+            if (!object) continue;
+
+            glhckObjectDrawAABB(object, 1);
+            glhckMaterial *mat = glhckMaterialNew(NULL);
+            glhckMaterialDiffuseb(mat, 0, 255, 0, 255);
+            glhckObjectMaterial(object, mat);
+            glhckMaterialFree(mat);
+
+            PrimObjPair pair;
+            CollisionInData colData;
+            pair.primitive = test->shape.any;
+            pair.object = object;
+            colData.velocity = (kmVec3){ 0, 0.1, 0 };
+            colData.response = test->response;
+            colData.userData = &pair;
+
+            switch (test->type) {
+               case PRIMITIVE_AABB:
+                  collisionWorldCollideAABB(world, test->shape.aabb, &colData);
+                  break;
+               case PRIMITIVE_AABBE:
+                  collisionWorldCollideAABBExtent(world, test->shape.aabbe, &colData);
+                  break;
+               case PRIMITIVE_OBB:
+                  collisionWorldCollideOBB(world, test->shape.obb, &colData);
+                  break;
+               case PRIMITIVE_SPHERE:
+                  collisionWorldCollideSphere(world, test->shape.sphere, &colData);
+                  break;
+               default:break;
+            }
+
+            glhckObjectRender(object);
+            glhckObjectFree(object);
+         }
+
+         glhckObject *object = glhckCubeFromKazmathAABB(&groundAABB);
          glhckMaterial *mat = glhckMaterialNew(NULL);
-         glhckMaterialDiffuseb(mat, 0, 255, 0, 255);
-         glhckObjectMaterial(object, mat);
-         glhckMaterialFree(mat);
-
-         CollisionInData colData;
-         fallAABB.min.y += 0.1;
-         fallAABB.max.y += 0.1;
-         colData.velocity = (kmVec3){ 0, 0.1, 0 };
-
-         colData.response = aabbResponse;
-         PrimObjPair pair;
-         pair.primitive = &fallAABB;
-         pair.object = object;
-         colData.userData = &pair;
-         collisionWorldCollideAABB(world, &fallAABB, &colData);
-
-         glhckObjectRender(object);
-         glhckObjectFree(object);
-
-         object = glhckSphereFromKazmathSphere(&fallSphere);
-         glhckObjectDrawAABB(object, 1);
-         mat = glhckMaterialNew(NULL);
-         glhckMaterialDiffuseb(mat, 0, 255, 0, 255);
-         glhckObjectMaterial(object, mat);
-         glhckMaterialFree(mat);
-
-         memset(&colData, 0, sizeof(CollisionInData));
-         fallSphere.point.y += 0.1;
-         colData.velocity = (kmVec3){ 0, 0.1, 0 };
-         colData.response = sphereResponse;
-
-         memset(&pair, 0, sizeof(PrimObjPair));
-         pair.primitive = &fallSphere;
-         pair.object = object;
-         colData.userData = &pair;
-         collisionWorldCollideSphere(world, &fallSphere, &colData);
-
-         glhckObjectRender(object);
-         glhckObjectFree(object);
-
-         object = glhckCubeFromKazmathAABB(&groundAABB);
-         mat = glhckMaterialNew(NULL);
          glhckMaterialDiffuseb(mat, 255, 255, 255, 255);
          glhckObjectMaterial(object, mat);
          glhckMaterialFree(mat);
          glhckObjectRender(object);
          glhckObjectFree(object);
-
          collisionWorldFree(world);
       }
 
@@ -1156,8 +1278,26 @@ static void run(GLFWwindow *window)
          keyLock = 1;
       } else if (glfwGetKey(window, GLFW_KEY_TAB)) {
          if (!keyLock) basicIntersections = !basicIntersections;
-         memcpy(&fallAABB, aabbTests[0].a, sizeof(kmAABB));
-         memcpy(&fallSphere, sphereTests[0].b, sizeof(kmSphere));
+
+         for (i = 0; i != LENGTH(responseTests); ++i) {
+            ResponseTest *test = &responseTests[i];
+            switch (test->type) {
+               case PRIMITIVE_AABB:
+                  memcpy(test->shape.any, responseTestsInitial[i].shape.any, sizeof(kmAABB));
+                  break;
+               case PRIMITIVE_AABBE:
+                  memcpy(test->shape.any, responseTestsInitial[i].shape.any, sizeof(kmAABBExtent));
+                  break;
+               case PRIMITIVE_OBB:
+                  memcpy(test->shape.any, responseTestsInitial[i].shape.any, sizeof(kmOBB));
+                  break;
+               case PRIMITIVE_SPHERE:
+                  memcpy(test->shape.any, responseTestsInitial[i].shape.any, sizeof(kmSphere));
+                  break;
+               default:break;
+            }
+         }
+
          keyLock = 1;
       } else {
          keyLock = 0;
