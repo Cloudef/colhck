@@ -57,6 +57,12 @@ kmAABB* kmAABBExtentToAABB(kmAABB* pOut, const kmAABBExtent* aabbExtent)
   return pOut;
 }
 
+static void kmMat3Print(kmMat3 *pIn)
+{
+   int j;
+   for (j = 0; j < 3; ++j) printf("[%.2f, %.2f, %.2f]\n", pIn->mat[j*3+0], pIn->mat[j*3+1], pIn->mat[j*3+2]);
+}
+
 kmVec3* kmVec3Abs(kmVec3 *pOut, const kmVec3 *pV1)
 {
    pOut->x = fabs(pV1->x);
@@ -348,9 +354,8 @@ kmBool kmOBBIntersectsOBB(const kmOBB *a, const kmOBB *b)
    kmVec3 tmp, translation;
 
    /* compute rotation matrix expressing b in a's coordinate frame */
-   for (i = 0; i < 3; ++i)
-      for (j = 0; j < 3; ++j)
-         mat.mat[i*3+j] = kmVec3Dot(&a->orientation[i], &b->orientation[j]);
+   for (i = 0; i < 3; ++i) for (j = 0; j < 3; ++j)
+      mat.mat[i+j*3] = kmVec3Dot(&a->orientation[i], &b->orientation[j]);
 
    /* bring translations into a's coordinate frame */
    kmVec3Subtract(&tmp, &a->aabb.point, &b->aabb.point);
@@ -361,68 +366,67 @@ kmBool kmOBBIntersectsOBB(const kmOBB *a, const kmOBB *b)
    /* compute common subexpressions. add in and epsilon term to
     * counteract arithmetic errors when two edges are parallel and
     * their cross product is (near) null. */
-   for (i = 0; i < 3; ++i)
-      for (j = 0; j < 3; ++j)
-         absMat.mat[i*3+j] = abs(mat.mat[i*3+j]) + kmEpsilon;
+   for (i = 0; i < 3; ++i) for (j = 0; j < 3; ++j)
+      absMat.mat[i+j*3] = abs(mat.mat[i+j*3]) + kmEpsilon;
 
    /* test axes L = A0, L = A1, L = A2 */
    for (i = 0; i < 3; ++i) {
       ra = (i==0?a->aabb.extent.x:i==1?a->aabb.extent.y:a->aabb.extent.z);
-      rb = b->aabb.extent.x * absMat.mat[i*3+0] + b->aabb.extent.y * absMat.mat[i*3+1] + b->aabb.extent.z * absMat.mat[i*3+2];
+      rb = b->aabb.extent.x * absMat.mat[i+0*3] + b->aabb.extent.y * absMat.mat[i+1*3] + b->aabb.extent.z * absMat.mat[i+2*3];
       if (abs((i==0?translation.x:i==1?translation.y:translation.z)) > ra + rb) return KM_FALSE;
    }
 
    /* test axes L = B0, L = B1, L = B2 */
    for (i = 0; i < 3; ++i) {
-      ra = a->aabb.extent.x * absMat.mat[0*3+i] + a->aabb.extent.y * absMat.mat[1*3+i] + a->aabb.extent.z * absMat.mat[2*3+i];
+      ra = a->aabb.extent.x * absMat.mat[0+i*3] + a->aabb.extent.y * absMat.mat[1+i*3] + a->aabb.extent.z * absMat.mat[2+i*3];
       rb = (i==0?b->aabb.extent.x:i==1?b->aabb.extent.y:b->aabb.extent.z);
-      if (abs(translation.x * mat.mat[0*3+i] + translation.y * mat.mat[1*3+i] + translation.z * mat.mat[2*3+i]) > ra + rb) return KM_FALSE;
+      if (abs(translation.x * mat.mat[0+i*3] + translation.y * mat.mat[1+i*3] + translation.z * mat.mat[2+i*3]) > ra + rb) return KM_FALSE;
    }
 
    /* test axis L = A0 x B0 */
-   ra = a->aabb.extent.y * absMat.mat[2*3+0] + a->aabb.extent.z * absMat.mat[1*3+0];
-   rb = b->aabb.extent.y * absMat.mat[0*3+2] + b->aabb.extent.z * absMat.mat[0*3+1];
-   if (abs(translation.z * mat.mat[1*3+0] - translation.y * mat.mat[2*3+0]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.y * absMat.mat[2+0*3] + a->aabb.extent.z * absMat.mat[1+0*3];
+   rb = b->aabb.extent.y * absMat.mat[0+2*3] + b->aabb.extent.z * absMat.mat[0+1*3];
+   if (abs(translation.z * mat.mat[1+0*3] - translation.y * mat.mat[2+0*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A0 x B1 */
-   ra = a->aabb.extent.y * absMat.mat[2*3+1] + a->aabb.extent.z * absMat.mat[1*3+1];
-   rb = b->aabb.extent.x * absMat.mat[0*3+2] + b->aabb.extent.z * absMat.mat[0*3+0];
-   if (abs(translation.z * mat.mat[1*3+1] - translation.y * mat.mat[2*3+1]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.y * absMat.mat[2+1*3] + a->aabb.extent.z * absMat.mat[1+1*3];
+   rb = b->aabb.extent.x * absMat.mat[0+2*3] + b->aabb.extent.z * absMat.mat[0+0*3];
+   if (abs(translation.z * mat.mat[1+1*3] - translation.y * mat.mat[2+1*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A0 x B2 */
-   ra = a->aabb.extent.y * absMat.mat[2*3+2] + a->aabb.extent.z * absMat.mat[1*3+2];
-   rb = b->aabb.extent.x * absMat.mat[0*3+1] + b->aabb.extent.y * absMat.mat[0*3+0];
-   if (abs(translation.z * mat.mat[1*3+2] - translation.y * mat.mat[2*3+2]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.y * absMat.mat[2+2*3] + a->aabb.extent.z * absMat.mat[1+2*3];
+   rb = b->aabb.extent.x * absMat.mat[0+1*3] + b->aabb.extent.y * absMat.mat[0+0*3];
+   if (abs(translation.z * mat.mat[1+2*3] - translation.y * mat.mat[2+2*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A1 x B0 */
-   ra = a->aabb.extent.x * absMat.mat[2*3+0] + a->aabb.extent.z * absMat.mat[0*3+0];
-   rb = b->aabb.extent.y * absMat.mat[1*3+2] + b->aabb.extent.z * absMat.mat[1*3+1];
-   if (abs(translation.x * mat.mat[2*3+0] - translation.z * mat.mat[0*3+0]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.x * absMat.mat[2+0*3] + a->aabb.extent.z * absMat.mat[0+0*3];
+   rb = b->aabb.extent.y * absMat.mat[1+2*3] + b->aabb.extent.z * absMat.mat[1+1*3];
+   if (abs(translation.x * mat.mat[2+0*3] - translation.z * mat.mat[0+0*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A1 x B1 */
-   ra = a->aabb.extent.x * absMat.mat[2*3+1] + a->aabb.extent.z * absMat.mat[0*3+1];
-   rb = b->aabb.extent.x * absMat.mat[1*3+2] + b->aabb.extent.z * absMat.mat[1*3+0];
-   if (abs(translation.x * mat.mat[2*3+1] - translation.z * mat.mat[0*3+1]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.x * absMat.mat[2+1*3] + a->aabb.extent.z * absMat.mat[0+1*3];
+   rb = b->aabb.extent.x * absMat.mat[1+2*3] + b->aabb.extent.z * absMat.mat[1+0*3];
+   if (abs(translation.x * mat.mat[2+1*3] - translation.z * mat.mat[0+1*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A1 x B2 */
-   ra = a->aabb.extent.x * absMat.mat[2*3+2] + a->aabb.extent.z * absMat.mat[0*3+2];
-   rb = b->aabb.extent.x * absMat.mat[1*3+1] + b->aabb.extent.y * absMat.mat[1*3+0];
-   if (abs(translation.x * mat.mat[2*3+2] - translation.z * mat.mat[0*3+2]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.x * absMat.mat[2+2*3] + a->aabb.extent.z * absMat.mat[0+2*3];
+   rb = b->aabb.extent.x * absMat.mat[1+1*3] + b->aabb.extent.y * absMat.mat[1+0*3];
+   if (abs(translation.x * mat.mat[2+2*3] - translation.z * mat.mat[0+2*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A2 x B0 */
-   ra = a->aabb.extent.x * absMat.mat[1*3+0] + a->aabb.extent.y * absMat.mat[0*3+0];
-   rb = b->aabb.extent.y * absMat.mat[2*3+2] + b->aabb.extent.z * absMat.mat[2*3+1];
-   if (abs(translation.y * mat.mat[0*3+0] - translation.x * mat.mat[1*3+0]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.x * absMat.mat[1+0*3] + a->aabb.extent.y * absMat.mat[0+0*3];
+   rb = b->aabb.extent.y * absMat.mat[2+2*3] + b->aabb.extent.z * absMat.mat[2+1*3];
+   if (abs(translation.y * mat.mat[0+0*3] - translation.x * mat.mat[1+0*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A2 x B1 */
-   ra = a->aabb.extent.x * absMat.mat[1*3+1] + a->aabb.extent.y * absMat.mat[0*3+1];
-   rb = b->aabb.extent.x * absMat.mat[2*3+2] + b->aabb.extent.z * absMat.mat[2*3+0];
-   if (abs(translation.y * mat.mat[0*3+1] - translation.x * mat.mat[1*3+1]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.x * absMat.mat[1+1*3] + a->aabb.extent.y * absMat.mat[0+1*3];
+   rb = b->aabb.extent.x * absMat.mat[2+2*3] + b->aabb.extent.z * absMat.mat[2+0*3];
+   if (abs(translation.y * mat.mat[0+1*3] - translation.x * mat.mat[1+1*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A2 x B2 */
-   ra = a->aabb.extent.x * absMat.mat[1*3+2] + a->aabb.extent.y * absMat.mat[0*3+2];
-   rb = b->aabb.extent.x * absMat.mat[2*3+1] + b->aabb.extent.y * absMat.mat[2*3+0];
-   if (abs(translation.y * mat.mat[0*3+2] - translation.x * mat.mat[1*3+2]) > ra + rb) return KM_FALSE;
+   ra = a->aabb.extent.x * absMat.mat[1+2*3] + a->aabb.extent.y * absMat.mat[0+2*3];
+   rb = b->aabb.extent.x * absMat.mat[2+1*3] + b->aabb.extent.y * absMat.mat[2+0*3];
+   if (abs(translation.y * mat.mat[0+2*3] - translation.x * mat.mat[1+2*3]) > ra + rb) return KM_FALSE;
 
    /* no seperating axis found */
    return KM_TRUE;
@@ -878,13 +882,54 @@ glhckObject* glhckCubeFromKazmathAABBExtent(const kmAABBExtent *aabb)
    return o;
 }
 
+// Decomposes kmMat3 to Euler kmVec3
+// X == Roll, Y == Yaw, Z == Pitch
+static kmVec3* kmMat3ToEuler(kmVec3 *pOut, kmMat3 *pIn)
+{
+   // Check for gimbal locks
+   if (kmAlmostEqual(pIn->mat[2], -1.0f)) {
+      pOut->x = 0.0f;
+      pOut->y = kmPI*0.5f;
+      pOut->z = pOut->x + atan2f(pIn->mat[3], pIn->mat[6]);
+   } else if (kmAlmostEqual(pIn->mat[2], 1.0f)) {
+      pOut->x = 0.0f;
+      pOut->y = -kmPI*0.5f;
+      pOut->z = -pOut->x + atan2f(-pIn->mat[3], -pIn->mat[6]);
+   } else {
+      float y1 = -asinf(pIn->mat[2]);
+      float y2 = kmPI - y1;
+
+      float x1 = atan2f(pIn->mat[5] / cos(y1), pIn->mat[8] / cos(y1));
+      float x2 = atan2f(pIn->mat[5] / cos(y2), pIn->mat[8] / cos(y2));
+
+      float z2 = atan2f(pIn->mat[1] / cos(y2), pIn->mat[0] / cos(y2));
+      float z1 = atan2f(pIn->mat[1] / cos(y1), pIn->mat[0] / cos(y1));
+
+      // Find out shortest rotation
+      if ((abs(x1) + abs(y1) + abs(z1)) <= (abs(x2) + abs(y2) + abs(z2))) {
+         pOut->x = x1;
+         pOut->y = y1;
+         pOut->z = z1;
+      } else {
+         pOut->x = x2;
+         pOut->y = y2;
+         pOut->z = z2;
+      }
+   }
+
+   pOut->x = kmRadiansToDegrees(pOut->x);
+   pOut->y = kmRadiansToDegrees(pOut->y);
+   pOut->z = kmRadiansToDegrees(pOut->z);
+   return pOut;
+}
+
 glhckObject* glhckCubeFromKazmathOBB(const kmOBB *obb)
 {
    kmMat3 mat;
-   kmVec3 rot = {1,1,1};
+   kmVec3 rot;
    glhckObject *o = glhckCubeFromKazmathAABBExtent(&obb->aabb);
    kmOBBGetMat3(obb, &mat);
-   kmVec3MultiplyMat3(&rot, &rot, &mat);
+   kmMat3ToEuler(&rot, &mat);
    glhckObjectRotation(o, &rot);
    return o;
 }
@@ -1056,31 +1101,31 @@ static void run(GLFWwindow *window)
    };
    OBBvsOBB obbTests[] = {
       {.a = (&(kmOBB){.aabb = *aabbeTests[0].a,
-            .orientation[0] = {1,0,45},
-            .orientation[1] = {0,1,45},
-            .orientation[2] = {0,0,45}}),
+            .orientation[0] = {0.71,-0.71,0},
+            .orientation[1] = {0.71, 0.71,0},
+            .orientation[2] = {0, 0,      1}}),
        .b = (&(kmOBB){.aabb = *aabbeTests[0].b,
-            .orientation[0] = {1,0,45},
-            .orientation[1] = {0,1,45},
-            .orientation[2] = {0,0,45}}),
+            .orientation[0] = {0.71,-0.71,0},
+            .orientation[1] = {0.71, 0.71,0},
+            .orientation[2] = {0, 0,      1}}),
       .intersection = 0},
       {.a = (&(kmOBB){.aabb = *aabbeTests[1].a,
-            .orientation[0] = {1,0,45},
-            .orientation[1] = {0,1,45},
-            .orientation[2] = {0,0,45}}),
+            .orientation[0] = {0.71,-0.71,0},
+            .orientation[1] = {0.71, 0.71,0},
+            .orientation[2] = {0, 0,      1}}),
        .b = (&(kmOBB){.aabb = *aabbeTests[1].b,
-            .orientation[0] = {1,0,45},
-            .orientation[1] = {0,1,45},
-            .orientation[2] = {0,0,45}}),
+            .orientation[0] = {0.71,-0.71,0},
+            .orientation[1] = {0.71, 0.71,0},
+            .orientation[2] = {0, 0,      1}}),
       .intersection = 0},
       {.a = (&(kmOBB){.aabb = *aabbeTests[2].a,
-            .orientation[0] = {1,0,45},
-            .orientation[1] = {0,1,45},
-            .orientation[2] = {0,0,45}}),
+            .orientation[0] = {0.71,-0.71,0},
+            .orientation[1] = {0.71, 0.71,0},
+            .orientation[2] = {0, 0,      1}}),
        .b = (&(kmOBB){.aabb = *aabbeTests[2].b,
-            .orientation[0] = {1,0,45},
-            .orientation[1] = {0,1,45},
-            .orientation[2] = {0,0,45}}),
+            .orientation[0] = {0.71,-0.71,0},
+            .orientation[1] = {0.71, 0.71,0},
+            .orientation[2] = {0, 0,      1}}),
       .intersection = 1},
    };
    SphereVsSphere sphereTests[] = {
