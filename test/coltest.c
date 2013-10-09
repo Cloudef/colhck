@@ -560,17 +560,64 @@ kmBool kmAABBExtentIntersectsCapsule(const kmAABBExtent *a, const kmCapsule *b)
  * Collision manager
  ***/
 
+/* internal */
+typedef enum _CollisionType {
+   COLLISION_AABB,
+   COLLISION_AABBE,
+   COLLISION_OBB,
+   COLLISION_SPHERE,
+   COLLISION_ELLIPSE,
+   COLLISION_CAPSULE,
+   COLLISION_LAST,
+} _CollisionType;
+
+typedef struct _CollisionPrimitive {
+   /* shape union pointer */
+   union {
+      kmAABB *aabb;
+      kmAABBExtent *aabbe;
+      kmOBB *obb;
+      kmSphere *sphere;
+      kmEllipse *ellipse;
+      kmCapsule *capsule;
+      void *any;
+   } shape;
+
+   /* also a linked list */
+   struct _CollisionPrimitive *next;
+
+   /* user data */
+   void *userData;
+
+   /* type of shape */
+   _CollisionType type;
+} _CollisionPrimitive;
+
+typedef struct _CollisionWorld {
+   _CollisionPrimitive *primitives;
+   void *userData;
+} _CollisionWorld;
+
+/* public */
+typedef _CollisionWorld CollisionWorld;
+typedef _CollisionPrimitive CollisionPrimitive;
+
+struct CollisionInData;
 struct CollisionOutData;
 typedef void (*collisionResponseFunction)(const struct CollisionOutData *collision);
+typedef int (*collisionTestFunction)(const struct CollisionInData *data, const CollisionPrimitive *collider);
 
 /* public */
 typedef struct CollisionInData {
    kmVec3 velocity;
    collisionResponseFunction response;
+   collisionTestFunction test;
    const void *userData;
 } CollisionInData;
 
 typedef struct CollisionOutData {
+   CollisionWorld *world;
+   const CollisionPrimitive *collider;
    const kmVec3 *velocity;
    const kmVec3 *reflection;
    const void *userData;
@@ -586,18 +633,8 @@ typedef struct CollisionResponseOutData {
 } CollisionResponseOutData;
 
 /* internal */
-typedef enum _CollisionType {
-   COLLISION_AABB,
-   COLLISION_AABBE,
-   COLLISION_OBB,
-   COLLISION_SPHERE,
-   COLLISION_ELLIPSE,
-   COLLISION_CAPSULE,
-   COLLISION_LAST,
-} _CollisionType;
-
 typedef struct _CollisionPacket {
-   _CollisionType type;
+   /* shape union pointer */
    union {
       const kmAABB *aabb;
       const kmAABBExtent *aabbe;
@@ -613,29 +650,10 @@ typedef struct _CollisionPacket {
 
    /* internal data */
    kmScalar nearestDistance;
-} _CollisionPacket;
 
-typedef struct _CollisionPrimitive {
+   /* type of shape */
    _CollisionType type;
-   union {
-      kmAABB *aabb;
-      kmAABBExtent *aabbe;
-      kmOBB *obb;
-      kmSphere *sphere;
-      kmEllipse *ellipse;
-      kmCapsule *capsule;
-      void *any;
-   } shape;
-   struct _CollisionPrimitive *next;
-} _CollisionPrimitive;
-
-typedef struct _CollisionWorld {
-   _CollisionPrimitive *primitives;
-} _CollisionWorld;
-
-/* public */
-typedef _CollisionWorld CollisionWorld;
-typedef _CollisionPrimitive CollisionPrimitive;
+} _CollisionPacket;
 
 const char* _collisionTypeString(_CollisionType type)
 {
@@ -721,7 +739,7 @@ static void _collisionPrimitiveFindPacketReflection(const _CollisionPrimitive *p
    }
 }
 
-static void _collisionPrimitiveTestWithPacket(const _CollisionPrimitive *primitive, _CollisionPacket *packet, void *testFunction)
+static void _collisionWorldPrimitiveTestWithPacket(CollisionWorld *object, const _CollisionPrimitive *primitive, _CollisionPacket *packet, void *testFunction)
 {
    typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
    _collisionTestFunc test = (_collisionTestFunc)testFunction;
@@ -735,9 +753,11 @@ static void _collisionPrimitiveTestWithPacket(const _CollisionPrimitive *primiti
    _collisionPrimitiveFindPacketReflection(primitive, packet, testFunction, &reflection);
 
    CollisionOutData outData;
-   outData.userData = packet->inData->userData;
+   outData.world = object;
+   outData.collider = primitive;
    outData.velocity = &packet->inData->velocity;
    outData.reflection = &reflection;
+   outData.userData = packet->inData->userData;
    if (packet->inData->response) packet->inData->response(&outData);
 }
 
@@ -771,8 +791,13 @@ static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionP
    testFunction[COLLISION_OBB][COLLISION_AABBE] = kmOBBIntersectsAABBExtent;
 
    for (p = object->primitives; p; p = p->next) {
+      /* ask user if we should even bother testing */
+      if (!packet->inData->test(packet->inData, p))
+         continue;
+
+      /* do the test */
       if (testFunction[packet->type][p->type]) {
-         _collisionPrimitiveTestWithPacket(p, packet, testFunction[packet->type][p->type]);
+         _collisionWorldPrimitiveTestWithPacket(object, p, packet, testFunction[packet->type][p->type]);
       } else {
          printf("-!- Test function between primitives not implemented!\n");
       }
@@ -790,10 +815,17 @@ static void _collisionPrimitiveFree(_CollisionPrimitive *primitive)
    IFDO(free, primitive);
 }
 
-static void _collisionWorldAddPrimitive(CollisionWorld *object, _CollisionPrimitive *primitive)
+static _CollisionPrimitive* _collisionWorldAddPrimitive(CollisionWorld *object, _CollisionType type, void *shape, void *userData)
 {
-   _CollisionPrimitive *p;
-   assert(object && primitive);
+   _CollisionPrimitive *primitive, *p;
+   assert(object && shape);
+
+   if (!(primitive = calloc(1, sizeof(_CollisionPrimitive))))
+      goto fail;
+
+   primitive->type = type;
+   primitive->shape.any = shape;
+   primitive->userData = userData;
 
    if (!(p = object->primitives)) {
       object->primitives = primitive;
@@ -801,15 +833,22 @@ static void _collisionWorldAddPrimitive(CollisionWorld *object, _CollisionPrimit
       for (; p && p->next; p = p->next);
       p->next = primitive;
    }
+
+   return primitive;
+
+fail:
+   IFDO(free, primitive);
+   return NULL;
 }
 
-CollisionWorld* collisionWorldNew(void)
+CollisionWorld* collisionWorldNew(void *userData)
 {
    CollisionWorld *object;
 
    if (!(object = calloc(1, sizeof(CollisionWorld))))
       goto fail;
 
+   object->userData = userData;
    return object;
 
 fail:
@@ -829,22 +868,24 @@ void collisionWorldFree(CollisionWorld *object)
    free(object);
 }
 
-CollisionPrimitive* collisionWorldAddEllipse(CollisionWorld *object, const kmEllipse *ellipse)
+void* collisionWorldGetUserData(const CollisionWorld *object)
+{
+   assert(object);
+   return object->userData;
+}
+
+CollisionPrimitive* collisionWorldAddEllipse(CollisionWorld *object, const kmEllipse *ellipse, void *userData)
 {
    kmEllipse *ellipseCopy = NULL;
    _CollisionPrimitive *primitive = NULL;
    assert(object && ellipse);
 
-   if (!(primitive = calloc(1, sizeof(_CollisionPrimitive))))
-      goto fail;
-
    if (!(ellipseCopy = malloc(sizeof(kmEllipse))))
       goto fail;
 
    memcpy(ellipseCopy, ellipse, sizeof(kmEllipse));
-   primitive->type = COLLISION_ELLIPSE;
-   primitive->shape.ellipse = ellipseCopy;
-   _collisionWorldAddPrimitive(object, primitive);
+   if (!(primitive = _collisionWorldAddPrimitive(object, COLLISION_ELLIPSE, ellipseCopy, userData)))
+      goto fail;
    return primitive;
 
 fail:
@@ -853,27 +894,60 @@ fail:
    return NULL;
 }
 
-CollisionPrimitive* collisionWorldAddAABB(CollisionWorld *object, const kmAABB *aabb)
+CollisionPrimitive* collisionWorldAddAABB(CollisionWorld *object, const kmAABB *aabb, void *userData)
 {
    kmAABB *aabbCopy = NULL;
    _CollisionPrimitive *primitive = NULL;
    assert(object && aabb);
 
-   if (!(primitive = calloc(1, sizeof(_CollisionPrimitive))))
-      goto fail;
-
    if (!(aabbCopy = malloc(sizeof(kmAABB))))
       goto fail;
 
    memcpy(aabbCopy, aabb, sizeof(kmAABB));
-   primitive->type = COLLISION_AABB;
-   primitive->shape.aabb = aabbCopy;
-   _collisionWorldAddPrimitive(object, primitive);
+   if (!(primitive = _collisionWorldAddPrimitive(object, COLLISION_AABB, aabbCopy, userData)))
+      goto fail;
    return primitive;
 
 fail:
-   IFDO(free, primitive);
    IFDO(free, aabbCopy);
+   return NULL;
+}
+
+CollisionPrimitive* collisionWorldAddAABBExtent(CollisionWorld *object, const kmAABBExtent *aabbe, void *userData)
+{
+   kmAABBExtent *aabbeCopy = NULL;
+   _CollisionPrimitive *primitive = NULL;
+   assert(object && aabbe);
+
+   if (!(aabbeCopy = malloc(sizeof(kmAABBExtent))))
+      goto fail;
+
+   memcpy(aabbeCopy, aabbe, sizeof(kmAABBExtent));
+   if (!(primitive = _collisionWorldAddPrimitive(object, COLLISION_AABBE, aabbeCopy, userData)))
+      goto fail;
+   return primitive;
+
+fail:
+   IFDO(free, aabbeCopy);
+   return NULL;
+}
+
+CollisionPrimitive* collisionWorldAddSphere(CollisionWorld *object, const kmSphere *sphere, void *userData)
+{
+   kmSphere *sphereCopy = NULL;
+   _CollisionPrimitive *primitive = NULL;
+   assert(object && sphere);
+
+   if (!(sphereCopy = malloc(sizeof(kmSphere))))
+      goto fail;
+
+   memcpy(sphereCopy, sphere, sizeof(kmSphere));
+   if (!(primitive = _collisionWorldAddPrimitive(object, COLLISION_SPHERE, sphereCopy, userData)))
+      goto fail;
+   return primitive;
+
+fail:
+   IFDO(free, sphereCopy);
    return NULL;
 }
 
@@ -947,6 +1021,12 @@ void collisionWorldCollideSphere(CollisionWorld *object, const kmSphere *sphere,
    // packet.nearestDistance = FLT_MAX;
    packet.shape.sphere = sphere;
    _collisionWorldCollideWithPacket(object, &packet);
+}
+
+void* collisionPrimitiveGetUserData(const CollisionPrimitive *primitive)
+{
+   assert(primitive);
+   return primitive->userData;
 }
 
 /***
@@ -1093,21 +1173,71 @@ typedef struct PrimObjPair {
    glhckObject *object;
 } PrimObjPair;
 
+static int shouldTestAgainst(const CollisionInData *data, const CollisionPrimitive *collider)
+{
+   void *ourShape = ((PrimObjPair*)data->userData)->primitive;
+   void *colliderShape = collisionPrimitiveGetUserData(collider);
+   return (colliderShape != ourShape);
+}
+
 static void aabbResponse(const CollisionOutData *collision)
 {
    glhckObject *object = ((PrimObjPair*)collision->userData)->object;
    kmAABB *aabb = ((PrimObjPair*)collision->userData)->primitive;
-   glhckMaterial *mat = glhckObjectGetMaterial(object);
-   if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+
+   if (object) {
+      glhckMaterial *mat = glhckObjectGetMaterial(object);
+      if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+   }
+
    kmAABBApplyVelocity(aabb, collision->reflection);
 }
 
 static void aabbeResponse(const CollisionOutData *collision)
 {
+   ResponseTest *tests = (ResponseTest*)collisionWorldGetUserData(collision->world);
    glhckObject *object = ((PrimObjPair*)collision->userData)->object;
    kmAABBExtent *aabbe = ((PrimObjPair*)collision->userData)->primitive;
-   glhckMaterial *mat = glhckObjectGetMaterial(object);
-   if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+
+   if (object) {
+      glhckMaterial *mat = glhckObjectGetMaterial(object);
+      if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+   }
+
+   if (collisionPrimitiveGetUserData(collision->collider) == tests[0].shape.any) {
+      kmVec3 velocity;
+      kmVec3Scale(&velocity, collision->reflection, -1);
+      kmAABBApplyVelocity(tests[0].shape.aabb, &velocity);
+
+      CollisionInData colData;
+      memset(&colData, 0, sizeof(colData));
+      memcpy(&colData.velocity, &velocity, sizeof(kmVec3));
+      PrimObjPair pair;
+      pair.primitive = tests[0].shape.any;
+      pair.object = NULL;
+      colData.response = tests[0].response;
+      colData.test = shouldTestAgainst;
+      colData.userData = &pair;
+      collisionWorldCollideAABB(collision->world, tests[0].shape.aabb, &colData);
+   }
+
+   if (collisionPrimitiveGetUserData(collision->collider) == tests[2].shape.any) {
+      kmVec3 velocity;
+      kmVec3Scale(&velocity, collision->reflection, -1);
+      kmSphereApplyVelocity(tests[2].shape.sphere, &velocity);
+
+      CollisionInData colData;
+      memset(&colData, 0, sizeof(colData));
+      memcpy(&colData.velocity, &velocity, sizeof(kmVec3));
+      PrimObjPair pair;
+      pair.primitive = tests[2].shape.any;
+      pair.object = NULL;
+      colData.response = tests[2].response;
+      colData.test = shouldTestAgainst;
+      colData.userData = &pair;
+      collisionWorldCollideSphere(collision->world, tests[2].shape.sphere, &colData);
+   }
+
    kmAABBEApplyVelocity(aabbe, collision->reflection);
 }
 
@@ -1122,8 +1252,12 @@ static void sphereResponse(const CollisionOutData *collision)
 {
    glhckObject *object = ((PrimObjPair*)collision->userData)->object;
    kmSphere *sphere = ((PrimObjPair*)collision->userData)->primitive;
-   glhckMaterial *mat = glhckObjectGetMaterial(object);
-   if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+
+   if (object) {
+      glhckMaterial *mat = glhckObjectGetMaterial(object);
+      if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+   }
+
    kmSphereApplyVelocity(sphere, collision->reflection);
 }
 
@@ -1291,7 +1425,7 @@ static void run(GLFWwindow *window)
    createPrimitives(i, obbTests, glhckCubeFromKazmathOBB);
    createPrimitives(i, sphereTests, glhckSphereFromKazmathSphere);
    kmAABB groundAABB = { .min = { 0, HEIGHT-80, 0 }, .max = { WIDTH, HEIGHT, 0 } };
-   kmAABB wall1AABB = { .min = { 0, 80, 0 }, .max = { 80, HEIGHT-80, 0 } };
+   kmAABB wall1AABB = { .min = { -10, 40, 0 }, .max = { 5, HEIGHT-80, 0 } };
 
    i = 0;
    while(RUNNING && glfwGetKey(window, GLFW_KEY_ESCAPE) != GLFW_PRESS) {
@@ -1319,9 +1453,23 @@ static void run(GLFWwindow *window)
             default:break;
          }
       } else {
-         CollisionWorld *world = collisionWorldNew();
-         collisionWorldAddAABB(world, &groundAABB);
-         collisionWorldAddAABB(world, &wall1AABB);
+         CollisionWorld *world = collisionWorldNew(responseTests);
+         collisionWorldAddAABB(world, &groundAABB, NULL);
+         collisionWorldAddAABB(world, &wall1AABB, NULL);
+         for (i = 0; i != LENGTH(responseTests); ++i) {
+            ResponseTest *test = &responseTests[i];
+            switch (test->type) {
+               case PRIMITIVE_AABB:
+                  collisionWorldAddAABB(world, test->shape.aabb, test->shape.aabb);
+                  break;
+               case PRIMITIVE_AABBE:
+                  collisionWorldAddAABBExtent(world, test->shape.aabbe, test->shape.aabbe);
+                  break;
+               case PRIMITIVE_SPHERE:
+                  collisionWorldAddSphere(world, test->shape.sphere, test->shape.sphere);
+                  break;
+            }
+         }
 
          for (i = 0; i != LENGTH(responseTests); ++i) {
             ResponseTest *test = &responseTests[i];
@@ -1330,10 +1478,10 @@ static void run(GLFWwindow *window)
             CollisionInData colData;
             colData.velocity = (kmVec3){ 0, 0.1, 0 };
             if (test->type == PRIMITIVE_AABBE) {
-              colData.velocity.x += glfwGetKey(window, GLFW_KEY_RIGHT) * 0.1;
-              colData.velocity.x -= glfwGetKey(window, GLFW_KEY_LEFT) * 0.1;
-              colData.velocity.y -= glfwGetKey(window, GLFW_KEY_UP) * 0.2;
-              colData.velocity.y += glfwGetKey(window, GLFW_KEY_DOWN) * 0.2;
+               colData.velocity.x += glfwGetKey(window, GLFW_KEY_RIGHT) * 0.1;
+               colData.velocity.x -= glfwGetKey(window, GLFW_KEY_LEFT) * 0.1;
+               colData.velocity.y -= glfwGetKey(window, GLFW_KEY_UP) * 0.2;
+               colData.velocity.y += glfwGetKey(window, GLFW_KEY_DOWN) * 0.2;
             }
 
             switch (test->type) {
@@ -1344,7 +1492,6 @@ static void run(GLFWwindow *window)
                case PRIMITIVE_AABBE:
                   object = glhckCubeFromKazmathAABBExtent(test->shape.aabbe);
                   kmAABBEApplyVelocity(test->shape.aabbe, &colData.velocity);
-                  collisionWorldAddAABB(world, responseTests[0].shape.aabb);
                   break;
                case PRIMITIVE_OBB:
                   object = glhckCubeFromKazmathOBB(test->shape.obb);
@@ -1368,6 +1515,7 @@ static void run(GLFWwindow *window)
             pair.primitive = test->shape.any;
             pair.object = object;
             colData.response = test->response;
+            colData.test = shouldTestAgainst;
             colData.userData = &pair;
 
             switch (test->type) {
