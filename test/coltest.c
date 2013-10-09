@@ -283,14 +283,14 @@ static void kmAABBApplyVelocity(kmAABB *aabb, const kmVec3 *velocity)
    kmVec3Add(&aabb->max, &aabb->max, velocity);
 }
 
-static void kmAABBEApplyVelocity(kmAABBExtent *aabbe, const kmVec3 *velocity)
+static void kmAABBExtentApplyVelocity(kmAABBExtent *aabbe, const kmVec3 *velocity)
 {
    kmVec3Add(&aabbe->point, &aabbe->point, velocity);
 }
 
 static void kmOBBApplyVelocity(kmOBB *obb, const kmVec3 *velocity)
 {
-   kmAABBEApplyVelocity(&obb->aabb, velocity);
+   kmAABBExtentApplyVelocity(&obb->aabb, velocity);
 }
 
 static void kmSphereApplyVelocity(kmSphere *sphere, const kmVec3 *velocity)
@@ -723,7 +723,7 @@ static void _collisionPrimitiveFindPacketReflection(const _CollisionPrimitive *p
          break;
       case COLLISION_AABBE:
          memcpy(&aabbe, packet->shape.any, sizeof(kmAABBExtent));
-         _collisionPacketPrimitiveReflection(packet, primitive, &aabbe, kmAABBEApplyVelocity, testFunction, outReflection);
+         _collisionPacketPrimitiveReflection(packet, primitive, &aabbe, kmAABBExtentApplyVelocity, testFunction, outReflection);
          break;
       case COLLISION_OBB:
          memcpy(&obb, packet->shape.any, sizeof(kmOBB));
@@ -1195,9 +1195,29 @@ static void aabbResponse(const CollisionOutData *collision)
 
 static void aabbeResponse(const CollisionOutData *collision)
 {
-   ResponseTest *tests = (ResponseTest*)collisionWorldGetUserData(collision->world);
    glhckObject *object = ((PrimObjPair*)collision->userData)->object;
    kmAABBExtent *aabbe = ((PrimObjPair*)collision->userData)->primitive;
+
+   if (object) {
+      glhckMaterial *mat = glhckObjectGetMaterial(object);
+      if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+   }
+
+   kmAABBExtentApplyVelocity(aabbe, collision->reflection);
+}
+
+static void obbResponse(const CollisionOutData *collision)
+{
+   kmOBB *obb = ((PrimObjPair*)collision->userData)->primitive;
+   ((PrimObjPair*)collision->userData)->primitive = &obb->aabb;
+   aabbeResponse(collision);
+}
+
+static void sphereResponse(const CollisionOutData *collision)
+{
+   ResponseTest *tests = (ResponseTest*)collisionWorldGetUserData(collision->world);
+   glhckObject *object = ((PrimObjPair*)collision->userData)->object;
+   kmSphere *sphere = ((PrimObjPair*)collision->userData)->primitive;
 
    if (object) {
       glhckMaterial *mat = glhckObjectGetMaterial(object);
@@ -1221,41 +1241,21 @@ static void aabbeResponse(const CollisionOutData *collision)
       collisionWorldCollideAABB(collision->world, tests[0].shape.aabb, &colData);
    }
 
-   if (collisionPrimitiveGetUserData(collision->collider) == tests[2].shape.any) {
+   if (collisionPrimitiveGetUserData(collision->collider) == tests[1].shape.any) {
       kmVec3 velocity;
       kmVec3Scale(&velocity, collision->reflection, -1);
-      kmSphereApplyVelocity(tests[2].shape.sphere, &velocity);
+      kmAABBExtentApplyVelocity(tests[1].shape.aabbe, &velocity);
 
       CollisionInData colData;
       memset(&colData, 0, sizeof(colData));
       memcpy(&colData.velocity, &velocity, sizeof(kmVec3));
       PrimObjPair pair;
-      pair.primitive = tests[2].shape.any;
+      pair.primitive = tests[1].shape.any;
       pair.object = NULL;
-      colData.response = tests[2].response;
+      colData.response = tests[1].response;
       colData.test = shouldTestAgainst;
       colData.userData = &pair;
-      collisionWorldCollideSphere(collision->world, tests[2].shape.sphere, &colData);
-   }
-
-   kmAABBEApplyVelocity(aabbe, collision->reflection);
-}
-
-static void obbResponse(const CollisionOutData *collision)
-{
-   kmOBB *obb = ((PrimObjPair*)collision->userData)->primitive;
-   ((PrimObjPair*)collision->userData)->primitive = &obb->aabb;
-   aabbeResponse(collision);
-}
-
-static void sphereResponse(const CollisionOutData *collision)
-{
-   glhckObject *object = ((PrimObjPair*)collision->userData)->object;
-   kmSphere *sphere = ((PrimObjPair*)collision->userData)->primitive;
-
-   if (object) {
-      glhckMaterial *mat = glhckObjectGetMaterial(object);
-      if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
+      collisionWorldCollideAABBExtent(collision->world, tests[1].shape.aabbe, &colData);
    }
 
    kmSphereApplyVelocity(sphere, collision->reflection);
@@ -1477,7 +1477,7 @@ static void run(GLFWwindow *window)
 
             CollisionInData colData;
             colData.velocity = (kmVec3){ 0, 0.1, 0 };
-            if (test->type == PRIMITIVE_AABBE) {
+            if (test->type == PRIMITIVE_SPHERE) {
                colData.velocity.x += glfwGetKey(window, GLFW_KEY_RIGHT) * 0.1;
                colData.velocity.x -= glfwGetKey(window, GLFW_KEY_LEFT) * 0.1;
                colData.velocity.y -= glfwGetKey(window, GLFW_KEY_UP) * 0.2;
@@ -1491,7 +1491,7 @@ static void run(GLFWwindow *window)
                   break;
                case PRIMITIVE_AABBE:
                   object = glhckCubeFromKazmathAABBExtent(test->shape.aabbe);
-                  kmAABBEApplyVelocity(test->shape.aabbe, &colData.velocity);
+                  kmAABBExtentApplyVelocity(test->shape.aabbe, &colData.velocity);
                   break;
                case PRIMITIVE_OBB:
                   object = glhckCubeFromKazmathOBB(test->shape.obb);
