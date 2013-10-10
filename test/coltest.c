@@ -57,7 +57,7 @@ kmAABB* kmAABBExtentToAABB(kmAABB* pOut, const kmAABBExtent* aabbExtent)
   return pOut;
 }
 
-static void kmMat3Print(kmMat3 *pIn)
+static void kmMat3Print(const kmMat3 *pIn)
 {
    int j;
    for (j = 0; j < 3; ++j) printf("[%.2f, %.2f, %.2f]\n", pIn->mat[j*3+0], pIn->mat[j*3+1], pIn->mat[j*3+2]);
@@ -85,6 +85,11 @@ kmVec3* kmVec3Multiply(kmVec3 *pOut, const kmVec3 *pV1, const kmVec3 *pV2)
    pOut->y = pV1->y * pV2->y;
    pOut->z = pV1->z * pV2->z;
    return pOut;
+}
+
+static void kmVec3Print(const kmVec3 *pIn)
+{
+   printf("[%f, %f, %f]\n", pIn->x, pIn->y, pIn->z);
 }
 
 /* compute distance between segment and point */
@@ -613,6 +618,7 @@ typedef struct CollisionInData {
    collisionResponseFunction response;
    collisionTestFunction test;
    const void *userData;
+   float slopeEasing;
 } CollisionInData;
 
 typedef struct CollisionOutData {
@@ -636,17 +642,20 @@ typedef struct CollisionResponseOutData {
 typedef struct _CollisionPacket {
    /* shape union pointer */
    union {
-      const kmAABB *aabb;
-      const kmAABBExtent *aabbe;
-      const kmOBB *obb;
-      const kmSphere *sphere;
-      const kmEllipse *ellipse;
-      const kmCapsule *capsule;
-      const void *any;
+      kmAABB *aabb;
+      kmAABBExtent *aabbe;
+      kmOBB *obb;
+      kmSphere *sphere;
+      kmEllipse *ellipse;
+      kmCapsule *capsule;
+      void *any;
    } shape;
 
    /* input data we use to calculate out data */
    const CollisionInData *inData;
+
+   /* number of collisions */
+   unsigned int collisions;
 
    /* internal data */
    kmScalar nearestDistance;
@@ -672,67 +681,89 @@ const char* _collisionTypeString(_CollisionType type)
 static void _collisionPacketPrimitiveReflection(const _CollisionPacket *packet, const _CollisionPrimitive *primitive, void *shape, void *velocityFunction, void *testFunction, kmVec3 *outReflection)
 {
    int i;
-   kmVec3 reflection, inverseReflection;
+   kmVec3 velocity, inverseVelocity;
    typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
    typedef void (*_velocityApplyFunc)(const void *a, const kmVec3 *velocity);
    _collisionTestFunc test = (_collisionTestFunc)testFunction;
-   _velocityApplyFunc velocity = (_velocityApplyFunc)velocityFunction;
+   _velocityApplyFunc shapeVelocity = (_velocityApplyFunc)velocityFunction;
 
    /* state before collision */
-   kmVec3Scale(&inverseReflection, &packet->inData->velocity, -1.0f);
-   velocity(shape, &inverseReflection);
+   memset(&velocity, 0, sizeof(kmVec3));
+   kmVec3Scale(&inverseVelocity, &packet->inData->velocity, -1.0f);
 
-   /* find reflection for collision */
-   memset(&reflection, 0, sizeof(kmVec3));
-   for (i = 0; i < 2; ++i) {
-      if (i == 0) reflection.y = packet->inData->velocity.y;
-      else if (i == 1) reflection.x = packet->inData->velocity.x;
-      else if (i == 2) reflection.z = packet->inData->velocity.z;
+   int printRest = 0;
+   for (i = 0; i < 3; ++i) {
+      if (i == 0) velocity.y = packet->inData->velocity.y + packet->inData->slopeEasing;
+      else if (i == 1) velocity.x = packet->inData->velocity.x;
+      else if (i == 2) velocity.z = packet->inData->velocity.z;
 
-      kmVec3Scale(&inverseReflection, &reflection, -1.0f);
-      velocity(shape, &reflection);
+      shapeVelocity(shape, &inverseVelocity);
 
-      if (test(shape, primitive->shape.any)) {
-         if (i == 0) reflection.y *= -1.0f;
-         else if (i == 1) reflection.x *= -1.0f;
-         else if (i == 2) reflection.z *= -1.0f;
-      } else {
-         if (i == 0) reflection.y = 0.0f;
-         else if (i == 1) reflection.x = 0.0f;
-         else if (i == 2) reflection.z = 0.0f;
+      if (i == 0 && test(shape, primitive->shape.any)) {
+         printf("VEL: ");
+         kmVec3Print(&packet->inData->velocity);
+         printRest = 1;
       }
 
-      velocity(shape, &inverseReflection);
+      kmVec3Scale(&inverseVelocity, &velocity, -1.0f);
+      shapeVelocity(shape, &velocity);
+
+      if (printRest) {
+         printf("BT%d: ", i);
+         kmVec3Print(&velocity);
+      }
+
+      if (test(shape, primitive->shape.any)) {
+         if (i == 0) {
+            outReflection->y = -velocity.y;
+            velocity.y = 0.0f;
+            if (printRest) puts("YCOL");
+         } else if (i == 1) {
+            outReflection->x = -velocity.x;
+            velocity.x = 0.0f;
+            if (printRest) puts("XCOL");
+         } else if (i == 2) {
+            outReflection->z = -velocity.z;
+            velocity.z = 0.0f;
+            if (printRest) puts("ZCOL");
+         }
+      }
+
+      if (printRest) {
+         printf("AT%d: ", i);
+         kmVec3Print(&velocity);
+         printf("IV%d: ", i);
+         kmVec3Print(&inverseVelocity);
+      }
    }
 
-   memcpy(outReflection, &reflection, sizeof(kmVec3));
+   if (printRest) {
+      printf("REF: ");
+      kmVec3Print(outReflection);
+   }
 }
 
 static void _collisionPrimitiveFindPacketReflection(const _CollisionPrimitive *primitive, const _CollisionPacket *packet, void *testFunction, kmVec3 *outReflection)
 {
-   kmAABB aabb;
-   kmAABBExtent aabbe;
-   kmOBB obb;
-   kmSphere sphere;
    memset(outReflection, 0, sizeof(kmVec3));
 
    switch (packet->type) {
-      case COLLISION_AABB:
-         memcpy(&aabb, packet->shape.any, sizeof(kmAABB));
-         _collisionPacketPrimitiveReflection(packet, primitive, &aabb, kmAABBApplyVelocity, testFunction, outReflection);
+      case COLLISION_AABB: {
+         _collisionPacketPrimitiveReflection(packet, primitive, packet->shape.any, kmAABBApplyVelocity, testFunction, outReflection);
          break;
-      case COLLISION_AABBE:
-         memcpy(&aabbe, packet->shape.any, sizeof(kmAABBExtent));
-         _collisionPacketPrimitiveReflection(packet, primitive, &aabbe, kmAABBExtentApplyVelocity, testFunction, outReflection);
+      }
+      case COLLISION_AABBE: {
+         _collisionPacketPrimitiveReflection(packet, primitive, packet->shape.any, kmAABBExtentApplyVelocity, testFunction, outReflection);
          break;
-      case COLLISION_OBB:
-         memcpy(&obb, packet->shape.any, sizeof(kmOBB));
-         _collisionPacketPrimitiveReflection(packet, primitive, &obb, kmOBBApplyVelocity, testFunction, outReflection);
+      }
+      case COLLISION_OBB: {
+         _collisionPacketPrimitiveReflection(packet, primitive, packet->shape.any, kmOBBApplyVelocity, testFunction, outReflection);
          break;
-      case COLLISION_SPHERE:
-         memcpy(&sphere, packet->shape.any, sizeof(kmSphere));
-         _collisionPacketPrimitiveReflection(packet, primitive, &sphere, kmSphereApplyVelocity, testFunction, outReflection);
+      }
+      case COLLISION_SPHERE: {
+         _collisionPacketPrimitiveReflection(packet, primitive, packet->shape.any, kmSphereApplyVelocity, testFunction, outReflection);
          break;
+      }
       case COLLISION_ELLIPSE:
       case COLLISION_CAPSULE:
       default:break;
@@ -749,21 +780,36 @@ static void _collisionWorldPrimitiveTestWithPacket(CollisionWorld *object, const
 
    // printf("%s COLLIDE %s\n", _collisionTypeString(packet->type), _collisionTypeString(primitive->type));
 
-   kmVec3 reflection;
-   _collisionPrimitiveFindPacketReflection(primitive, packet, testFunction, &reflection);
+   if (packet->inData->response) {
+      kmVec3 reflection;
+      _collisionPrimitiveFindPacketReflection(primitive, packet, testFunction, &reflection);
 
-   CollisionOutData outData;
-   outData.world = object;
-   outData.collider = primitive;
-   outData.velocity = &packet->inData->velocity;
-   outData.reflection = &reflection;
-   outData.userData = packet->inData->userData;
-   if (packet->inData->response) packet->inData->response(&outData);
+      CollisionOutData outData;
+      outData.world = object;
+      outData.collider = primitive;
+      outData.velocity = &packet->inData->velocity;
+      outData.reflection = &reflection;
+      outData.userData = packet->inData->userData;
+      packet->inData->response(&outData);
+   }
+
+   ++packet->collisions;
 }
 
-static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionPacket *packet)
+static unsigned int _collisionWorldCollide(CollisionWorld *object, _CollisionType type, void *shape, const CollisionInData *data)
 {
+   static const kmVec3 zero = {0,0,0};
+   _CollisionPacket packet;
    _CollisionPrimitive *p;
+   assert(object && shape && data);
+
+   if (kmVec3AreEqual(&data->velocity, &zero))
+      return 0;
+
+   memset(&packet, 0, sizeof(packet));
+   packet.type = type;
+   packet.shape.any = shape;
+   packet.inData = data;
 
    void *testFunction[COLLISION_LAST][COLLISION_LAST];
    memset(testFunction, 0, sizeof(testFunction));
@@ -792,16 +838,18 @@ static void _collisionWorldCollideWithPacket(CollisionWorld *object, _CollisionP
 
    for (p = object->primitives; p; p = p->next) {
       /* ask user if we should even bother testing */
-      if (!packet->inData->test(packet->inData, p))
+      if (data->test && !data->test(data, p))
          continue;
 
       /* do the test */
-      if (testFunction[packet->type][p->type]) {
-         _collisionWorldPrimitiveTestWithPacket(object, p, packet, testFunction[packet->type][p->type]);
+      if (testFunction[packet.type][p->type]) {
+         _collisionWorldPrimitiveTestWithPacket(object, p, &packet, testFunction[packet.type][p->type]);
       } else {
          printf("-!- Test function between primitives not implemented!\n");
       }
    }
+
+   return packet.collisions;
 }
 
 static void _collisionPrimitiveFree(_CollisionPrimitive *primitive)
@@ -967,60 +1015,49 @@ void collisionWorldRemovePrimitive(CollisionWorld *object, CollisionPrimitive *p
    _collisionPrimitiveFree(primitive);
 }
 
-void collisionWorldCollideAABB(CollisionWorld *object, const kmAABB *aabb, const CollisionInData *data)
+unsigned int collisionWorldCollideAABB(CollisionWorld *object, const kmAABB *aabb, const CollisionInData *data)
 {
-   static kmVec3 zero = {0,0,0};
-   _CollisionPacket packet;
-   if (kmVec3AreEqual(&data->velocity, &zero))
-      return;
-
-   packet.type = COLLISION_AABB;
-   packet.inData = data;
-   // packet.nearestDistance = FLT_MAX;
-   packet.shape.aabb = aabb;
-   _collisionWorldCollideWithPacket(object, &packet);
+   kmAABB copy;
+   memcpy(&copy, aabb, sizeof(copy));
+   return _collisionWorldCollide(object, COLLISION_AABB, &copy, data);
 }
 
-void collisionWorldCollideAABBExtent(CollisionWorld *object, const kmAABBExtent *aabbe, const CollisionInData *data)
+unsigned int collisionWorldCollideAABBExtent(CollisionWorld *object, const kmAABBExtent *aabbe, const CollisionInData *data)
 {
-   static kmVec3 zero = {0,0,0};
-   _CollisionPacket packet;
-   if (kmVec3AreEqual(&data->velocity, &zero))
-      return;
-
-   packet.type = COLLISION_AABBE;
-   packet.inData = data;
-   // packet.nearestDistance = FLT_MAX;
-   packet.shape.aabbe = aabbe;
-   _collisionWorldCollideWithPacket(object, &packet);
+   kmAABBExtent copy;
+   memcpy(&copy, aabbe, sizeof(copy));
+   return _collisionWorldCollide(object, COLLISION_AABBE, &copy, data);
 }
 
-void collisionWorldCollideOBB(CollisionWorld *object, const kmOBB *obb, const CollisionInData *data)
+unsigned int collisionWorldCollideOBB(CollisionWorld *object, const kmOBB *obb, const CollisionInData *data)
 {
-   static kmVec3 zero = {0,0,0};
-   _CollisionPacket packet;
-   if (kmVec3AreEqual(&data->velocity, &zero))
-      return;
-
-   packet.type = COLLISION_OBB;
-   packet.inData = data;
-   // packet.nearestDistance = FLT_MAX;
-   packet.shape.obb = obb;
-   _collisionWorldCollideWithPacket(object, &packet);
+   kmOBB copy;
+   memcpy(&copy, obb, sizeof(copy));
+   return _collisionWorldCollide(object, COLLISION_OBB, &copy, data);
 }
 
-void collisionWorldCollideSphere(CollisionWorld *object, const kmSphere *sphere, const CollisionInData *data)
+unsigned int collisionWorldCollideSphere(CollisionWorld *object, const kmSphere *sphere, const CollisionInData *data)
 {
-   static kmVec3 zero = {0,0,0};
-   _CollisionPacket packet;
-   if (kmVec3AreEqual(&data->velocity, &zero))
-      return;
+   kmSphere copy;
+   memcpy(&copy, sphere, sizeof(copy));
+   return _collisionWorldCollide(object, COLLISION_SPHERE, &copy, data);
+}
 
-   packet.type = COLLISION_SPHERE;
-   packet.inData = data;
-   // packet.nearestDistance = FLT_MAX;
-   packet.shape.sphere = sphere;
-   _collisionWorldCollideWithPacket(object, &packet);
+void collisionPrimitiveGetPosition(const CollisionPrimitive *primitive, kmVec3 *position)
+{
+   assert(primitive && position);
+   memset(position, 0, sizeof(kmVec3));
+   switch (primitive->type) {
+      case COLLISION_AABB:
+         kmAABBCentre(primitive->shape.aabb, position);
+         return;
+      case COLLISION_AABBE:
+         memcpy(position, &primitive->shape.aabbe->point, sizeof(kmVec3));
+         return;
+      case COLLISION_SPHERE:
+         memcpy(position, &primitive->shape.sphere->point, sizeof(kmVec3));
+         return;
+   }
 }
 
 void* collisionPrimitiveGetUserData(const CollisionPrimitive *primitive)
@@ -1175,6 +1212,7 @@ typedef struct PrimObjPair {
 
 static int shouldTestAgainst(const CollisionInData *data, const CollisionPrimitive *collider)
 {
+   assert(data->userData);
    void *ourShape = ((PrimObjPair*)data->userData)->primitive;
    void *colliderShape = collisionPrimitiveGetUserData(collider);
    return (colliderShape != ourShape);
@@ -1195,6 +1233,7 @@ static void aabbResponse(const CollisionOutData *collision)
 
 static void aabbeResponse(const CollisionOutData *collision)
 {
+   ResponseTest *tests = (ResponseTest*)collisionWorldGetUserData(collision->world);
    glhckObject *object = ((PrimObjPair*)collision->userData)->object;
    kmAABBExtent *aabbe = ((PrimObjPair*)collision->userData)->primitive;
 
@@ -1213,8 +1252,11 @@ static void obbResponse(const CollisionOutData *collision)
    aabbeResponse(collision);
 }
 
+static kmVec3 sphereVelocity = {0,0,0};
+static float sphereRotation = 0.0f;
 static void sphereResponse(const CollisionOutData *collision)
 {
+   static float rotation = 0.0f;
    ResponseTest *tests = (ResponseTest*)collisionWorldGetUserData(collision->world);
    glhckObject *object = ((PrimObjPair*)collision->userData)->object;
    kmSphere *sphere = ((PrimObjPair*)collision->userData)->primitive;
@@ -1224,9 +1266,12 @@ static void sphereResponse(const CollisionOutData *collision)
       if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
    }
 
+#if 1
    if (collisionPrimitiveGetUserData(collision->collider) == tests[0].shape.any) {
       kmVec3 velocity;
-      kmVec3Scale(&velocity, collision->reflection, -1);
+      velocity.x = collision->reflection->x*-1;
+      velocity.y = collision->reflection->y*-1;
+      velocity.z = collision->reflection->z*-1;
       kmAABBApplyVelocity(tests[0].shape.aabb, &velocity);
 
       CollisionInData colData;
@@ -1243,7 +1288,9 @@ static void sphereResponse(const CollisionOutData *collision)
 
    if (collisionPrimitiveGetUserData(collision->collider) == tests[1].shape.any) {
       kmVec3 velocity;
-      kmVec3Scale(&velocity, collision->reflection, -1);
+      velocity.x = collision->reflection->x*-1;
+      velocity.y = collision->reflection->y*-1;
+      velocity.z = collision->reflection->z*-1;
       kmAABBExtentApplyVelocity(tests[1].shape.aabbe, &velocity);
 
       CollisionInData colData;
@@ -1257,8 +1304,63 @@ static void sphereResponse(const CollisionOutData *collision)
       colData.userData = &pair;
       collisionWorldCollideAABBExtent(collision->world, tests[1].shape.aabbe, &colData);
    }
+#endif
 
    kmSphereApplyVelocity(sphere, collision->reflection);
+
+#if 1
+   if ((sphereVelocity.y < 0.0 && collision->reflection->y > 0.0) ||
+       (sphereVelocity.y > 0.0 && collision->reflection->y < 0.0))
+      sphereVelocity.y *= -0.5;
+   if (collision->reflection->y > -0.1 && (
+       (sphereVelocity.x < 0.0 && collision->reflection->x > 0.0) ||
+       (sphereVelocity.x > 0.0 && collision->reflection->x < 0.0)))
+      sphereVelocity.x *= -0.5;
+   if (collision->reflection->y > -0.1 && (
+       (sphereVelocity.z < 0.0 && collision->reflection->z > 0.0) ||
+       (sphereVelocity.z > 0.0 && collision->reflection->z < 0.0)))
+      sphereVelocity.z *= -0.5;
+#endif
+
+   if (collision->velocity->x >= 0.0f) {
+      CollisionInData colData;
+      memset(&colData, 0, sizeof(colData));
+      colData.test = shouldTestAgainst;
+      colData.velocity = (kmVec3){3.0,0.5,0.0};
+
+      kmSphere copy;
+      memcpy(&copy, sphere, sizeof(copy));
+      kmSphereApplyVelocity(&copy, &colData.velocity);
+
+      PrimObjPair pair;
+      pair.primitive = sphere;
+      pair.object = NULL;
+      colData.userData = &pair;
+
+      if (collisionWorldCollideSphere(collision->world, &copy, &colData) == 0) {
+         sphereVelocity.x += 0.01;
+      }
+   }
+
+   if (collision->velocity->x <= 0.0f) {
+      CollisionInData colData;
+      memset(&colData, 0, sizeof(colData));
+      colData.test = shouldTestAgainst;
+      colData.velocity = (kmVec3){-3.0,0.5,0.0};
+
+      kmSphere copy;
+      memcpy(&copy, sphere, sizeof(copy));
+      kmSphereApplyVelocity(&copy, &colData.velocity);
+
+      PrimObjPair pair;
+      pair.primitive = sphere;
+      pair.object = NULL;
+      colData.userData = &pair;
+
+      if (collisionWorldCollideSphere(collision->world, &copy, &colData) == 0) {
+         sphereVelocity.x -= 0.01;
+      }
+   }
 }
 
 static void textToObject(glhckText *text, unsigned int font, int size, glhckObject *object, const char *str)
@@ -1426,6 +1528,7 @@ static void run(GLFWwindow *window)
    createPrimitives(i, sphereTests, glhckSphereFromKazmathSphere);
    kmAABB groundAABB = { .min = { 0, HEIGHT-80, 0 }, .max = { WIDTH, HEIGHT, 0 } };
    kmAABB wall1AABB = { .min = { -10, 40, 0 }, .max = { 5, HEIGHT-80, 0 } };
+   kmSphere wallSphere =  { .point = { WIDTH*0.8, HEIGHT-60, 0 }, .radius = 50 };
 
    i = 0;
    while(RUNNING && glfwGetKey(window, GLFW_KEY_ESCAPE) != GLFW_PRESS) {
@@ -1456,6 +1559,7 @@ static void run(GLFWwindow *window)
          CollisionWorld *world = collisionWorldNew(responseTests);
          collisionWorldAddAABB(world, &groundAABB, NULL);
          collisionWorldAddAABB(world, &wall1AABB, NULL);
+         collisionWorldAddSphere(world, &wallSphere, NULL);
          for (i = 0; i != LENGTH(responseTests); ++i) {
             ResponseTest *test = &responseTests[i];
             switch (test->type) {
@@ -1476,12 +1580,64 @@ static void run(GLFWwindow *window)
             glhckObject *object = NULL;
 
             CollisionInData colData;
+            memset(&colData, 0, sizeof(colData));
             colData.velocity = (kmVec3){ 0, 0.1, 0 };
+
             if (test->type == PRIMITIVE_SPHERE) {
+               colData.slopeEasing = 0.4;
                colData.velocity.x += glfwGetKey(window, GLFW_KEY_RIGHT) * 0.1;
                colData.velocity.x -= glfwGetKey(window, GLFW_KEY_LEFT) * 0.1;
+
                colData.velocity.y -= glfwGetKey(window, GLFW_KEY_UP) * 0.2;
-               colData.velocity.y += glfwGetKey(window, GLFW_KEY_DOWN) * 0.2;
+               colData.velocity.y += glfwGetKey(window, GLFW_KEY_DOWN) * 0.8;
+
+               if (colData.velocity.x == 0.0f) {
+                  if (sphereVelocity.x > 0.0f) {
+                     sphereVelocity.x *= 0.999f;
+                     if (sphereVelocity.x < 0.005f) sphereVelocity.x = 0.0f;
+                  }
+                  if (sphereVelocity.x < 0.0f) {
+                     sphereVelocity.x *= 0.999f;
+                     if (sphereVelocity.x > -0.005f) sphereVelocity.x = 0.0f;
+                  }
+               }
+
+               if (colData.velocity.y == 0.1) {
+                  if (sphereVelocity.y > 0.0f) {
+                     sphereVelocity.y *= 0.999f;
+                     if (sphereVelocity.y < 0.005f) sphereVelocity.z = 0.0f;
+                  }
+                  if (sphereVelocity.y < 0.0f) {
+                     sphereVelocity.y *= 0.999f;
+                     if (sphereVelocity.y > -0.005f) sphereVelocity.z = 0.0f;
+                  }
+               }
+
+               if (sphereVelocity.z > 0.0f) {
+                  sphereVelocity.z *= 0.999f;
+                  if (sphereVelocity.z < 0.005f) sphereVelocity.z = 0.0f;
+               }
+               if (sphereVelocity.z < 0.0f) {
+                  sphereVelocity.z *= 0.999f;
+                  if (sphereVelocity.z > -0.005f) sphereVelocity.z = 0.0f;
+               }
+
+               if (sphereVelocity.x > 4.0f) sphereVelocity.x = 4.0f;
+               if (sphereVelocity.y > 4.0f) sphereVelocity.y = 4.0f;
+               if (sphereVelocity.z > 4.0f) sphereVelocity.z = 4.0f;
+               if (sphereVelocity.x < -4.0f) sphereVelocity.x = -4.0f;
+               if (sphereVelocity.y < -4.0f) sphereVelocity.y = -4.0f;
+               if (sphereVelocity.z < -4.0f) sphereVelocity.z = -4.0f;
+
+#if 1
+               sphereVelocity.x += colData.velocity.x * 0.001;
+               sphereVelocity.y += colData.velocity.y * 0.001;
+               sphereVelocity.z += colData.velocity.z * 0.001;
+               colData.velocity.x = sphereVelocity.x;
+               colData.velocity.y = sphereVelocity.y;
+               colData.velocity.z = sphereVelocity.z;
+               sphereRotation += sphereVelocity.x;
+#endif
             }
 
             switch (test->type) {
@@ -1500,12 +1656,13 @@ static void run(GLFWwindow *window)
                case PRIMITIVE_SPHERE:
                   object = glhckSphereFromKazmathSphere(test->shape.sphere);
                   kmSphereApplyVelocity(test->shape.sphere, &colData.velocity);
+                  glhckObjectRotationf(object, 0, 0, sphereRotation);
                   break;
                default:break;
             }
             if (!object) continue;
 
-            glhckObjectDrawAABB(object, 1);
+            glhckObjectDrawOBB(object, 1);
             glhckMaterial *mat = glhckMaterialNew(NULL);
             glhckMaterialDiffuseb(mat, 0, 255, 0, 255);
             glhckObjectMaterial(object, mat);
@@ -1554,6 +1711,15 @@ static void run(GLFWwindow *window)
          glhckObjectRender(object);
          glhckObjectFree(object);
 
+
+         object = glhckSphereFromKazmathSphere(&wallSphere);
+         mat = glhckMaterialNew(NULL);
+         glhckMaterialDiffuseb(mat, 255, 255, 255, 255);
+         glhckObjectMaterial(object, mat);
+         glhckMaterialFree(mat);
+         glhckObjectRender(object);
+         glhckObjectFree(object);
+
          collisionWorldFree(world);
       }
 
@@ -1567,6 +1733,7 @@ static void run(GLFWwindow *window)
       } else if (glfwGetKey(window, GLFW_KEY_TAB)) {
          if (!keyLock) basicIntersections = !basicIntersections;
 
+         memset(&sphereVelocity, 0, sizeof(sphereVelocity));
          for (i = 0; i != LENGTH(responseTests); ++i) {
             ResponseTest *test = &responseTests[i];
             switch (test->type) {
