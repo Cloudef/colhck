@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <float.h>
 
 #define IFDO(f, x) { if (x) f(x); x = NULL; }
 
@@ -189,6 +190,57 @@ kmScalar kmClosestPointFromSegments(const kmVec3 *a1, const kmVec3 *b1, const km
    kmVec3Scale(c2, c2, *t);
    kmVec3Subtract(&cd, c1, c2);
    return kmVec3Dot(&cd, &cd);
+}
+
+static const kmVec3* kmAABBExtentClosestPointTo(const kmAABBExtent *pIn, const kmVec3 *point, kmVec3 *pOut)
+{
+   kmVec3 v;
+   kmVec3Assign(&v, point);
+
+   if (point->x < pIn->point.x - pIn->extent.x) v.x = pIn->point.x - pIn->extent.x;
+   if (point->x > pIn->point.x + pIn->extent.x) v.x = pIn->point.x + pIn->extent.x;
+   pOut->x = v.x;
+
+   if (point->y < pIn->point.y - pIn->extent.y) v.y = pIn->point.y - pIn->extent.y;
+   if (point->y > pIn->point.y + pIn->extent.y) v.y = pIn->point.y + pIn->extent.y;
+   pOut->y = v.y;
+
+   if (point->z < pIn->point.z - pIn->extent.z) v.z = pIn->point.z - pIn->extent.z;
+   if (point->z > pIn->point.z + pIn->extent.z) v.z = pIn->point.z + pIn->extent.z;
+   pOut->z = v.z;
+
+   return pOut;
+}
+
+static const kmVec3* kmAABBClosestPointTo(const kmAABB *pIn, const kmVec3 *point, kmVec3 *pOut)
+{
+   kmVec3 v;
+   kmVec3Assign(&v, point);
+
+   if (point->x < pIn->min.x) v.x = pIn->min.x;
+   if (point->x > pIn->max.x) v.x = pIn->max.x;
+   pOut->x = v.x;
+
+   if (point->y < pIn->min.y) v.y = pIn->min.y;
+   if (point->y > pIn->max.y) v.y = pIn->max.y;
+   pOut->y = v.y;
+
+   if (point->z < pIn->min.z) v.z = pIn->min.z;
+   if (point->z > pIn->max.z) v.z = pIn->max.z;
+   pOut->z = v.z;
+
+   return pOut;
+}
+
+static const kmVec3* kmSphereClosestPointTo(const kmSphere *pIn, const kmVec3 *point, kmVec3 *pOut)
+{
+   kmVec3 u, pointMinusCenter;
+   kmVec3Subtract(&pointMinusCenter, point, &pIn->point);
+   float l = kmVec3Length(&pointMinusCenter);
+   pOut->x = point->x + (point->x - pIn->point.x) * ((pIn->radius-l)/l);
+   pOut->y = point->y + (point->y - pIn->point.y) * ((pIn->radius-l)/l);
+   pOut->z = point->z + (point->z - pIn->point.z) * ((pIn->radius-l)/l);
+   return pOut;
 }
 
 static kmScalar kmSqDistPointAABB(const kmVec3 *p, const kmAABB *aabb)
@@ -561,6 +613,122 @@ kmBool kmAABBExtentIntersectsCapsule(const kmAABBExtent *a, const kmCapsule *b)
    return KM_TRUE;
 }
 
+// Intersect ray R(t) = p + t*d against AABB a. When intersecting,
+// return intersection distance tmin and point q of intersection
+kmBool kmRay3IntersectAABBExtent(const kmRay3 *ray, const kmAABBExtent *aabbe, float *outMin, kmVec3 *outIntersection)
+{
+   float tmin = 0.0f, tmax = FLT_MAX;
+
+   if (abs(ray->dir.x) < kmEpsilon) {
+      if (ray->start.x < aabbe->point.x - aabbe->extent.x || ray->start.x > aabbe->point.x + aabbe->extent.x) return KM_FALSE;
+   } else {
+      float ood = 1.0f / ray->start.x;
+      float t1 = ((aabbe->point.x - aabbe->extent.x) - ray->start.x) * ood;
+      float t2 = ((aabbe->point.x + aabbe->extent.x) - ray->start.x) * ood;
+      if (t1 > t2) kmSwap(&t1, &t2);
+      if (t1 > tmin) tmin = t1;
+      if (t2 > tmax) tmax = t2;
+      if (tmin > tmax) return KM_FALSE;
+   }
+
+   if (abs(ray->dir.y) < kmEpsilon) {
+      if (ray->start.y < aabbe->point.y - aabbe->extent.y || ray->start.y > aabbe->point.y + aabbe->extent.y) return KM_FALSE;
+   } else {
+      float ood = 1.0f / ray->start.y;
+      float t1 = ((aabbe->point.y - aabbe->extent.y) - ray->start.y) * ood;
+      float t2 = ((aabbe->point.y + aabbe->extent.y) - ray->start.y) * ood;
+      if (t1 > t2) kmSwap(&t1, &t2);
+      if (t1 > tmin) tmin = t1;
+      if (t2 > tmax) tmax = t2;
+      if (tmin > tmax) return KM_FALSE;
+   }
+
+   if (abs(ray->dir.z) < kmEpsilon) {
+      // Ray is parallel to slab. No hit if origin not within slab
+      if (ray->start.z < aabbe->point.z - aabbe->extent.z || ray->start.z > aabbe->point.z + aabbe->extent.z) return KM_FALSE;
+   } else {
+      // Compute intersection t value of ray with near and far plane of slab
+      float ood = 1.0f / ray->start.z;
+      float t1 = ((aabbe->point.z - aabbe->extent.z) - ray->start.z) * ood;
+      float t2 = ((aabbe->point.z + aabbe->extent.z) - ray->start.z) * ood;
+
+      // Make t1 be intersection with near plane, t2 with far plane
+      if (t1 > t2) kmSwap(&t1, &t2);
+
+      // Exit with no collision as soon as slab intersection becomes empty
+      if (t1 > tmin) tmin = t1;
+      if (t2 > tmax) tmax = t2;
+      if (tmin > tmax) return KM_FALSE;
+   }
+
+   // Ray intersects all 3 slabs. Return point (q) and intersection t value (tmin)
+   if (outIntersection) {
+      kmVec3 dMultMin;
+      kmVec3Scale(&dMultMin, &ray->dir, tmin);
+      kmVec3Add(outIntersection, &ray->start, &dMultMin);
+   }
+   if (outMin) * outMin = tmin;
+   return KM_TRUE;
+}
+
+// Intersect ray R(t) = p + t*d against AABB a. When intersecting,
+// return intersection distance tmin and point q of intersection
+kmBool kmRay3IntersectAABB(const kmRay3 *ray, const kmAABB *aabb, float *outMin, kmVec3 *outIntersection)
+{
+   float tmin = 0.0f, tmax = FLT_MAX;
+
+   if (abs(ray->dir.x) < kmEpsilon) {
+      if (ray->start.x < aabb->min.x || ray->start.x > aabb->max.x) return KM_FALSE;
+   } else {
+      float ood = 1.0f / ray->start.x;
+      float t1 = (aabb->min.x - ray->start.x) * ood;
+      float t2 = (aabb->max.x - ray->start.x) * ood;
+      if (t1 > t2) kmSwap(&t1, &t2);
+      if (t1 > tmin) tmin = t1;
+      if (t2 > tmax) tmax = t2;
+      if (tmin > tmax) return KM_FALSE;
+   }
+
+   if (abs(ray->dir.y) < kmEpsilon) {
+      if (ray->start.y < aabb->min.y || ray->start.y > aabb->max.y) return KM_FALSE;
+   } else {
+      float ood = 1.0f / ray->start.y;
+      float t1 = (aabb->min.y - ray->start.y) * ood;
+      float t2 = (aabb->max.y - ray->start.y) * ood;
+      if (t1 > t2) kmSwap(&t1, &t2);
+      if (t1 > tmin) tmin = t1;
+      if (t2 > tmax) tmax = t2;
+      if (tmin > tmax) return KM_FALSE;
+   }
+
+   if (abs(ray->dir.z) < kmEpsilon) {
+      // Ray is parallel to slab. No hit if origin not within slab
+      if (ray->start.z < aabb->min.z || ray->start.z > aabb->max.z) return KM_FALSE;
+   } else {
+      // Compute intersection t value of ray with near and far plane of slab
+      float ood = 1.0f / ray->start.z;
+      float t1 = (aabb->min.z - ray->start.z) * ood;
+      float t2 = (aabb->max.z - ray->start.z) * ood;
+
+      // Make t1 be intersection with near plane, t2 with far plane
+      if (t1 > t2) kmSwap(&t1, &t2);
+
+      // Exit with no collision as soon as slab intersection becomes empty
+      if (t1 > tmin) tmin = t1;
+      if (t2 > tmax) tmax = t2;
+      if (tmin > tmax) return KM_FALSE;
+   }
+
+   // Ray intersects all 3 slabs. Return point (q) and intersection t value (tmin)
+   if (outIntersection) {
+      kmVec3 dMultMin;
+      kmVec3Scale(&dMultMin, &ray->dir, tmin);
+      kmVec3Add(outIntersection, &ray->start, &dMultMin);
+   }
+   if (outMin) * outMin = tmin;
+   return KM_TRUE;
+}
+
 /***
  * Collision manager
  ***/
@@ -576,7 +744,7 @@ typedef enum _CollisionType {
    COLLISION_LAST,
 } _CollisionType;
 
-typedef struct _CollisionPrimitive {
+typedef struct _CollisionShape {
    /* shape union pointer */
    union {
       kmAABB *aabb;
@@ -586,16 +754,21 @@ typedef struct _CollisionPrimitive {
       kmEllipse *ellipse;
       kmCapsule *capsule;
       void *any;
-   } shape;
+   };
+
+   /* type of shape */
+   _CollisionType type;
+} _CollisionShape;
+
+typedef struct _CollisionPrimitive {
+   /* shape for primitive */
+   struct _CollisionShape shape;
 
    /* also a linked list */
    struct _CollisionPrimitive *next;
 
    /* user data */
    void *userData;
-
-   /* type of shape */
-   _CollisionType type;
 } _CollisionPrimitive;
 
 typedef struct _CollisionWorld {
@@ -624,6 +797,7 @@ typedef struct CollisionInData {
 typedef struct CollisionOutData {
    CollisionWorld *world;
    const CollisionPrimitive *collider;
+   const kmVec3 *contactPoint;
    const kmVec3 *velocity;
    const kmVec3 *reflection;
    const void *userData;
@@ -640,28 +814,14 @@ typedef struct CollisionResponseOutData {
 
 /* internal */
 typedef struct _CollisionPacket {
-   /* shape union pointer */
-   union {
-      kmAABB *aabb;
-      kmAABBExtent *aabbe;
-      kmOBB *obb;
-      kmSphere *sphere;
-      kmEllipse *ellipse;
-      kmCapsule *capsule;
-      void *any;
-   } shape;
+   /* shape for packet */
+   struct _CollisionShape shape;
 
    /* input data we use to calculate out data */
    const CollisionInData *inData;
 
    /* number of collisions */
    unsigned int collisions;
-
-   /* internal data */
-   kmScalar nearestDistance;
-
-   /* type of shape */
-   _CollisionType type;
 } _CollisionPacket;
 
 const char* _collisionTypeString(_CollisionType type)
@@ -678,7 +838,28 @@ const char* _collisionTypeString(_CollisionType type)
    return "INVALID TYPE";
 }
 
-static void _collisionPacketPrimitiveReflection(const _CollisionPacket *packet, const _CollisionPrimitive *primitive, void *shape, void *velocityFunction, void *testFunction, kmVec3 *outReflection)
+void _collisionShapeGetPosition(const _CollisionShape *shape, kmVec3 *outPosition)
+{
+   assert(shape && outPosition);
+   memset(outPosition, 0, sizeof(kmVec3));
+
+   switch (shape->type) {
+      case COLLISION_AABB:
+         kmAABBCentre(shape->aabb, outPosition);
+         return;
+      case COLLISION_AABBE:
+         memcpy(outPosition, &shape->aabbe->point, sizeof(kmVec3));
+         return;
+      case COLLISION_SPHERE:
+         memcpy(outPosition, &shape->sphere->point, sizeof(kmVec3));
+         return;
+      default:break;
+   }
+
+   printf("-!- Shape position function not implemented for %s\n", _collisionTypeString(shape->type));
+}
+
+static void _collisionShapeShapeReflection(_CollisionShape *shape, const _CollisionShape *collider, const kmVec3 *inVelocity, const void *velocityFunction, const void *testFunction, kmVec3 *outReflection)
 {
    int i;
    kmVec3 velocity, inverseVelocity;
@@ -686,34 +867,41 @@ static void _collisionPacketPrimitiveReflection(const _CollisionPacket *packet, 
    typedef void (*_velocityApplyFunc)(const void *a, const kmVec3 *velocity);
    _collisionTestFunc test = (_collisionTestFunc)testFunction;
    _velocityApplyFunc shapeVelocity = (_velocityApplyFunc)velocityFunction;
+   assert(shape && collider && inVelocity && testFunction && outReflection);
+   memset(outReflection, 0, sizeof(kmVec3));
+
+   if (!velocityFunction) {
+      printf("-!- Reflection lookup not implemented for %s\n", _collisionTypeString(shape->type));
+      return;
+   }
 
    /* state before collision */
    memset(&velocity, 0, sizeof(kmVec3));
-   kmVec3Scale(&inverseVelocity, &packet->inData->velocity, -1.0f);
+   kmVec3Scale(&inverseVelocity, inVelocity, -1.0f);
 
    int printRest = 0;
    for (i = 0; i < 3; ++i) {
-      if (i == 0) velocity.y = packet->inData->velocity.y + packet->inData->slopeEasing;
-      else if (i == 1) velocity.x = packet->inData->velocity.x;
-      else if (i == 2) velocity.z = packet->inData->velocity.z;
+      if (i == 0) velocity.y = inVelocity->y + 0.25;
+      else if (i == 1) velocity.x = inVelocity->x;
+      else if (i == 2) velocity.z = inVelocity->z;
 
-      shapeVelocity(shape, &inverseVelocity);
+      shapeVelocity(shape->any, &inverseVelocity);
 
-      if (i == 0 && test(shape, primitive->shape.any)) {
+      if (i == 0 && test(shape->any, collider->any)) {
          printf("VEL: ");
-         kmVec3Print(&packet->inData->velocity);
+         kmVec3Print(inVelocity);
          printRest = 1;
       }
 
       kmVec3Scale(&inverseVelocity, &velocity, -1.0f);
-      shapeVelocity(shape, &velocity);
+      shapeVelocity(shape->any, &velocity);
 
       if (printRest) {
          printf("BT%d: ", i);
          kmVec3Print(&velocity);
       }
 
-      if (test(shape, primitive->shape.any)) {
+      if (test(shape->any, collider->any)) {
          if (i == 0) {
             outReflection->y = -velocity.y;
             velocity.y = 0.0f;
@@ -743,52 +931,64 @@ static void _collisionPacketPrimitiveReflection(const _CollisionPacket *packet, 
    }
 }
 
-static void _collisionPrimitiveFindPacketReflection(const _CollisionPrimitive *primitive, const _CollisionPacket *packet, void *testFunction, kmVec3 *outReflection)
+static void _collisionShapeShapeContact(const _CollisionShape *shape, const _CollisionShape *collider, const void *closestFunction, kmVec3 *outContact)
 {
-   memset(outReflection, 0, sizeof(kmVec3));
+   typedef const kmVec3* (*_closestPointFunc)(const void *a, const kmVec3 *point, kmVec3 *outPoint);
+   _closestPointFunc closestPoint = (_closestPointFunc)closestFunction;
+   memset(outContact, 0, sizeof(kmVec3));
 
-   switch (packet->type) {
-      case COLLISION_AABB: {
-         _collisionPacketPrimitiveReflection(packet, primitive, packet->shape.any, kmAABBApplyVelocity, testFunction, outReflection);
-         break;
-      }
-      case COLLISION_AABBE: {
-         _collisionPacketPrimitiveReflection(packet, primitive, packet->shape.any, kmAABBExtentApplyVelocity, testFunction, outReflection);
-         break;
-      }
-      case COLLISION_OBB: {
-         _collisionPacketPrimitiveReflection(packet, primitive, packet->shape.any, kmOBBApplyVelocity, testFunction, outReflection);
-         break;
-      }
-      case COLLISION_SPHERE: {
-         _collisionPacketPrimitiveReflection(packet, primitive, packet->shape.any, kmSphereApplyVelocity, testFunction, outReflection);
-         break;
-      }
-      case COLLISION_ELLIPSE:
-      case COLLISION_CAPSULE:
-      default:break;
+   if (!closestFunction) {
+      printf("-!- Closest point lookup not implemented for %s\n", _collisionTypeString(collider->type));
+      return;
    }
+
+   kmVec3 point;
+   _collisionShapeGetPosition(shape, &point);
+   closestPoint(collider->any, &point, outContact);
+
+   // debug
+   glhckObject *o = glhckCubeNew(5.0);
+   kmVec3 pos = *outContact;
+   pos.z += 50.0;
+   glhckMaterial *mat = glhckMaterialNew(NULL);
+   glhckObjectMaterial(o, mat);
+   glhckMaterialDiffuseb(mat, 0, 0, 255, 255);
+   glhckObjectPosition(o, &pos);
+   glhckObjectRender(o);
+   glhckMaterialFree(mat);
+   glhckObjectFree(o);
 }
 
-static void _collisionWorldPrimitiveTestWithPacket(CollisionWorld *object, const _CollisionPrimitive *primitive, _CollisionPacket *packet, void *testFunction)
+static void _collisionWorldPrimitiveTestWithPacket(CollisionWorld *world, const _CollisionPrimitive *primitive, _CollisionPacket *packet, const void *testFunction, const void *closestFunction, const void *velocityFunction)
 {
    typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
    _collisionTestFunc test = (_collisionTestFunc)testFunction;
+   assert(world && primitive && packet);
+
+   if (!testFunction) {
+      printf("-!- Intersection test not implemented for %s <-> %s\n",
+            _collisionTypeString(packet->shape.type),
+            _collisionTypeString(primitive->shape.type));
+      return;
+   }
 
    if (!test(packet->shape.any, primitive->shape.any))
       return;
 
-   // printf("%s COLLIDE %s\n", _collisionTypeString(packet->type), _collisionTypeString(primitive->type));
+   // printf("%s COLLIDE %s\n", _collisionTypeString(packet->shape.type), _collisionTypeString(primitive->shape.type));
 
    if (packet->inData->response) {
-      kmVec3 reflection;
-      _collisionPrimitiveFindPacketReflection(primitive, packet, testFunction, &reflection);
+      kmVec3 contactPoint, reflection;
+      _collisionShapeShapeContact(&packet->shape, &primitive->shape, closestFunction, &contactPoint);
+      _collisionShapeShapeReflection(&packet->shape, &primitive->shape, &packet->inData->velocity, velocityFunction, testFunction, &reflection);
 
       CollisionOutData outData;
-      outData.world = object;
+      memset(&outData, 0, sizeof(outData));
+      outData.world = world;
       outData.collider = primitive;
       outData.velocity = &packet->inData->velocity;
       outData.reflection = &reflection;
+      outData.contactPoint = &contactPoint;
       outData.userData = packet->inData->userData;
       packet->inData->response(&outData);
    }
@@ -796,18 +996,18 @@ static void _collisionWorldPrimitiveTestWithPacket(CollisionWorld *object, const
    ++packet->collisions;
 }
 
-static unsigned int _collisionWorldCollide(CollisionWorld *object, _CollisionType type, void *shape, const CollisionInData *data)
+static unsigned int _collisionWorldCollide(CollisionWorld *world, _CollisionType type, void *shape, const CollisionInData *data)
 {
    static const kmVec3 zero = {0,0,0};
    _CollisionPacket packet;
    _CollisionPrimitive *p;
-   assert(object && shape && data);
+   assert(world && shape && data);
 
    if (kmVec3AreEqual(&data->velocity, &zero))
       return 0;
 
    memset(&packet, 0, sizeof(packet));
-   packet.type = type;
+   packet.shape.type = type;
    packet.shape.any = shape;
    packet.inData = data;
 
@@ -836,47 +1036,63 @@ static unsigned int _collisionWorldCollide(CollisionWorld *object, _CollisionTyp
    testFunction[COLLISION_OBB][COLLISION_AABB] = kmOBBIntersectsAABB;
    testFunction[COLLISION_OBB][COLLISION_AABBE] = kmOBBIntersectsAABBExtent;
 
-   for (p = object->primitives; p; p = p->next) {
+   void *closestFunction[COLLISION_LAST];
+   memset(closestFunction, 0, sizeof(closestFunction));
+   closestFunction[COLLISION_AABB] = kmAABBClosestPointTo;
+   closestFunction[COLLISION_AABBE] = kmAABBExtentClosestPointTo;
+   closestFunction[COLLISION_SPHERE] = kmSphereClosestPointTo;
+
+   void *velocityFunction[COLLISION_LAST];
+   memset(velocityFunction, 0, sizeof(velocityFunction));
+   velocityFunction[COLLISION_AABB] = kmAABBApplyVelocity;
+   velocityFunction[COLLISION_AABBE] = kmAABBExtentApplyVelocity;
+   velocityFunction[COLLISION_SPHERE] = kmSphereApplyVelocity;
+   velocityFunction[COLLISION_OBB] = kmOBBApplyVelocity;
+
+   for (p = world->primitives; p; p = p->next) {
       /* ask user if we should even bother testing */
       if (data->test && !data->test(data, p))
          continue;
 
       /* do the test */
-      if (testFunction[packet.type][p->type]) {
-         _collisionWorldPrimitiveTestWithPacket(object, p, &packet, testFunction[packet.type][p->type]);
-      } else {
-         printf("-!- Test function between primitives not implemented!\n");
-      }
+      _collisionWorldPrimitiveTestWithPacket(world, p, &packet,
+            testFunction[packet.shape.type][p->shape.type],
+            closestFunction[p->shape.type], velocityFunction[packet.shape.type]);
    }
 
    return packet.collisions;
 }
 
+static void _collisionShapeFree(_CollisionShape *shape)
+{
+   switch (shape->type) {
+      default:
+         IFDO(free, shape->any);
+         break;
+   }
+}
+
 static void _collisionPrimitiveFree(_CollisionPrimitive *primitive)
 {
    assert(primitive);
-   switch (primitive->type) {
-      default:
-         IFDO(free, primitive->shape.any);
-         break;
-   }
+   _collisionShapeFree(&primitive->shape);
    IFDO(free, primitive);
 }
 
-static _CollisionPrimitive* _collisionWorldAddPrimitive(CollisionWorld *object, _CollisionType type, void *shape, void *userData)
+static _CollisionPrimitive* _collisionWorldAddPrimitive(CollisionWorld *world, _CollisionType type, void *shape, void *userData)
 {
    _CollisionPrimitive *primitive, *p;
-   assert(object && shape);
+   assert(world && shape);
 
    if (!(primitive = calloc(1, sizeof(_CollisionPrimitive))))
       goto fail;
 
-   primitive->type = type;
+   primitive->shape.type = type;
    primitive->shape.any = shape;
    primitive->userData = userData;
 
-   if (!(p = object->primitives)) {
-      object->primitives = primitive;
+   if (!(p = world->primitives)) {
+      world->primitives = primitive;
    } else {
       for (; p && p->next; p = p->next);
       p->next = primitive;
@@ -1043,27 +1259,16 @@ unsigned int collisionWorldCollideSphere(CollisionWorld *object, const kmSphere 
    return _collisionWorldCollide(object, COLLISION_SPHERE, &copy, data);
 }
 
-void collisionPrimitiveGetPosition(const CollisionPrimitive *primitive, kmVec3 *position)
+void collisionPrimitiveGetPosition(const CollisionPrimitive *object, kmVec3 *position)
 {
-   assert(primitive && position);
-   memset(position, 0, sizeof(kmVec3));
-   switch (primitive->type) {
-      case COLLISION_AABB:
-         kmAABBCentre(primitive->shape.aabb, position);
-         return;
-      case COLLISION_AABBE:
-         memcpy(position, &primitive->shape.aabbe->point, sizeof(kmVec3));
-         return;
-      case COLLISION_SPHERE:
-         memcpy(position, &primitive->shape.sphere->point, sizeof(kmVec3));
-         return;
-   }
+   assert(object);
+   _collisionShapeGetPosition(&object->shape, position);
 }
 
-void* collisionPrimitiveGetUserData(const CollisionPrimitive *primitive)
+void* collisionPrimitiveGetUserData(const CollisionPrimitive *object)
 {
-   assert(primitive);
-   return primitive->userData;
+   assert(object);
+   return object->userData;
 }
 
 /***
@@ -1309,58 +1514,10 @@ static void sphereResponse(const CollisionOutData *collision)
    kmSphereApplyVelocity(sphere, collision->reflection);
 
 #if 1
-   if ((sphereVelocity.y < 0.0 && collision->reflection->y > 0.0) ||
-       (sphereVelocity.y > 0.0 && collision->reflection->y < 0.0))
-      sphereVelocity.y *= -0.5;
-   if (collision->reflection->y > -0.1 && (
-       (sphereVelocity.x < 0.0 && collision->reflection->x > 0.0) ||
-       (sphereVelocity.x > 0.0 && collision->reflection->x < 0.0)))
-      sphereVelocity.x *= -0.5;
-   if (collision->reflection->y > -0.1 && (
-       (sphereVelocity.z < 0.0 && collision->reflection->z > 0.0) ||
-       (sphereVelocity.z > 0.0 && collision->reflection->z < 0.0)))
-      sphereVelocity.z *= -0.5;
+   sphereVelocity.x -= (collision->contactPoint->x - sphere->point.x)*0.001;
+   sphereVelocity.y -= (collision->contactPoint->y - sphere->point.y)*0.001;
+   sphereVelocity.z -= (collision->contactPoint->z - sphere->point.z)*0.001;
 #endif
-
-   if (collision->velocity->x >= 0.0f) {
-      CollisionInData colData;
-      memset(&colData, 0, sizeof(colData));
-      colData.test = shouldTestAgainst;
-      colData.velocity = (kmVec3){3.0,0.5,0.0};
-
-      kmSphere copy;
-      memcpy(&copy, sphere, sizeof(copy));
-      kmSphereApplyVelocity(&copy, &colData.velocity);
-
-      PrimObjPair pair;
-      pair.primitive = sphere;
-      pair.object = NULL;
-      colData.userData = &pair;
-
-      if (collisionWorldCollideSphere(collision->world, &copy, &colData) == 0) {
-         sphereVelocity.x += 0.01;
-      }
-   }
-
-   if (collision->velocity->x <= 0.0f) {
-      CollisionInData colData;
-      memset(&colData, 0, sizeof(colData));
-      colData.test = shouldTestAgainst;
-      colData.velocity = (kmVec3){-3.0,0.5,0.0};
-
-      kmSphere copy;
-      memcpy(&copy, sphere, sizeof(copy));
-      kmSphereApplyVelocity(&copy, &colData.velocity);
-
-      PrimObjPair pair;
-      pair.primitive = sphere;
-      pair.object = NULL;
-      colData.userData = &pair;
-
-      if (collisionWorldCollideSphere(collision->world, &copy, &colData) == 0) {
-         sphereVelocity.x -= 0.01;
-      }
-   }
 }
 
 static void textToObject(glhckText *text, unsigned int font, int size, glhckObject *object, const char *str)
