@@ -7,6 +7,9 @@
 
 #define IFDO(f, x) { if (x) f(x); x = NULL; }
 
+// for debugging
+static char PAUSE_FRAME = 0;
+
 /***
  * Kazmath extension
  * When stuff is tested and working
@@ -199,16 +202,29 @@ static const kmVec3* kmAABBExtentClosestPointTo(const kmAABBExtent *pIn, const k
 
    if (point->x < pIn->point.x - pIn->extent.x) v.x = pIn->point.x - pIn->extent.x;
    if (point->x > pIn->point.x + pIn->extent.x) v.x = pIn->point.x + pIn->extent.x;
-   pOut->x = v.x;
-
    if (point->y < pIn->point.y - pIn->extent.y) v.y = pIn->point.y - pIn->extent.y;
    if (point->y > pIn->point.y + pIn->extent.y) v.y = pIn->point.y + pIn->extent.y;
-   pOut->y = v.y;
-
    if (point->z < pIn->point.z - pIn->extent.z) v.z = pIn->point.z - pIn->extent.z;
    if (point->z > pIn->point.z + pIn->extent.z) v.z = pIn->point.z + pIn->extent.z;
-   pOut->z = v.z;
 
+   if (kmVec3AreEqual(&v, point)) {
+      kmVec3 delta;
+      kmVec3Subtract(&delta, &v, &pIn->point);
+      if (fabs(delta.y) > fabs(delta.x) && fabs(delta.y) > fabs(delta.z)) {
+         if (delta.y > 0.0f) v.y = pIn->point.y + pIn->extent.y;
+         if (delta.y < 0.0f) v.y = pIn->point.y - pIn->extent.y;
+      } else if (fabs(delta.x) > fabs(delta.y) && fabs(delta.x) > fabs(delta.z)) {
+         if (delta.x > 0.0f) v.x = pIn->point.x + pIn->extent.x;
+         if (delta.x < 0.0f) v.x = pIn->point.x - pIn->extent.x;
+      } else {
+         if (delta.z > 0.0f) v.z = pIn->point.z + pIn->extent.z;
+         if (delta.z < 0.0f) v.z = pIn->point.z - pIn->extent.z;
+      }
+   }
+
+   pOut->x = v.x;
+   pOut->y = v.y;
+   pOut->z = v.z;
    return pOut;
 }
 
@@ -219,24 +235,39 @@ static const kmVec3* kmAABBClosestPointTo(const kmAABB *pIn, const kmVec3 *point
 
    if (point->x < pIn->min.x) v.x = pIn->min.x;
    if (point->x > pIn->max.x) v.x = pIn->max.x;
-   pOut->x = v.x;
-
    if (point->y < pIn->min.y) v.y = pIn->min.y;
    if (point->y > pIn->max.y) v.y = pIn->max.y;
-   pOut->y = v.y;
-
    if (point->z < pIn->min.z) v.z = pIn->min.z;
    if (point->z > pIn->max.z) v.z = pIn->max.z;
-   pOut->z = v.z;
 
+   if (kmVec3AreEqual(&v, point)) {
+      kmVec3 center, delta;
+      kmAABBCentre(pIn, &center);
+      kmVec3Subtract(&delta, &v, &center);
+      if (fabs(delta.y) > fabs(delta.x) && fabs(delta.y) > fabs(delta.z)) {
+         if (delta.y > 0.0f) v.y = pIn->max.y;
+         if (delta.y < 0.0f) v.y = pIn->min.y;
+      } else if (fabs(delta.x) > fabs(delta.y) && fabs(delta.x) > fabs(delta.z)) {
+         if (delta.x > 0.0f) v.x = pIn->max.x;
+         if (delta.x < 0.0f) v.x = pIn->min.x;
+      } else {
+         if (delta.z > 0.0f) v.z = pIn->max.z;
+         if (delta.z < 0.0f) v.z = pIn->min.z;
+      }
+   }
+
+   pOut->x = v.x;
+   pOut->y = v.y;
+   pOut->z = v.z;
    return pOut;
 }
 
 static const kmVec3* kmSphereClosestPointTo(const kmSphere *pIn, const kmVec3 *point, kmVec3 *pOut)
 {
-   kmVec3 u, pointMinusCenter;
+   kmVec3 pointMinusCenter;
    kmVec3Subtract(&pointMinusCenter, point, &pIn->point);
    float l = kmVec3Length(&pointMinusCenter);
+   if (kmAlmostEqual(l, 0.0f)) l = 1.0f;
    pOut->x = point->x + (point->x - pIn->point.x) * ((pIn->radius-l)/l);
    pOut->y = point->y + (point->y - pIn->point.y) * ((pIn->radius-l)/l);
    pOut->z = point->z + (point->z - pIn->point.z) * ((pIn->radius-l)/l);
@@ -321,6 +352,13 @@ static kmVec3* kmVec3Max(kmVec3 *pOut, const kmVec3 *pIn, const kmVec3 *pV1)
    pOut->z = max(pIn->z, pV1->z);
 }
 
+static void kmVec3Swap(kmVec3 *a, kmVec3 *b)
+{
+   const kmVec3 tmp = *a;
+   *a = *b;
+   *b = tmp;
+}
+
 static void kmSwap(kmScalar *a, kmScalar *b)
 {
    const kmScalar tmp = *a;
@@ -368,13 +406,13 @@ kmBool kmSphereIntersectsAABBExtent(const kmSphere *a, const kmAABBExtent *b)
 {
    if(kmAABBExtentContainsPoint(b, &a->point)) return KM_TRUE;
    kmScalar distance = kmSqDistPointAABBExtent(&a->point, b);
-   return (distance <= a->radius * a->radius);
+   return (distance < a->radius * a->radius);
 }
 
 kmBool kmSphereIntersectsAABB(const kmSphere *a, const kmAABB *b)
 {
    kmScalar distance = kmSqDistPointAABB(&a->point, b);
-   return (distance <= a->radius * a->radius);
+   return (distance < a->radius * a->radius);
 }
 
 kmBool kmSphereIntersectsSphere(const kmSphere *a, const kmSphere *b)
@@ -384,7 +422,7 @@ kmBool kmSphereIntersectsSphere(const kmSphere *a, const kmSphere *b)
    kmVec3Subtract(&vector, &a->point, &b->point);
    distance = kmVec3LengthSq(&vector);
    radiusSum = a->radius + b->radius;
-   return (distance <= radiusSum * radiusSum);
+   return (distance < radiusSum * radiusSum);
 }
 
 kmBool kmSphereIntersectsCapsule(const kmSphere *a, const kmCapsule *b)
@@ -392,7 +430,7 @@ kmBool kmSphereIntersectsCapsule(const kmSphere *a, const kmCapsule *b)
    kmScalar distance, radiusSum;
    distance = kmVec3LengthSqSegment(&b->pointA, &b->pointB, &a->point);
    radiusSum = a->radius + b->radius;
-   return (distance <= radiusSum * radiusSum);
+   return (distance < radiusSum * radiusSum);
 }
 
 kmBool kmCapsuleIntersectsCapsule(const kmCapsule *a, const kmCapsule *b)
@@ -402,7 +440,7 @@ kmBool kmCapsuleIntersectsCapsule(const kmCapsule *a, const kmCapsule *b)
    kmScalar distance, radiusSum;
    distance = kmClosestPointFromSegments(&a->pointA, &a->pointB, &b->pointA, &b->pointB, &s, &s, &c1, &c2);
    radiusSum = a->radius + b->radius;
-   return (distance <= radiusSum * radiusSum);
+   return (distance < radiusSum * radiusSum);
 }
 
 kmBool kmSphereIntersectsPlane(const kmSphere *a, const kmPlane *b)
@@ -410,7 +448,7 @@ kmBool kmSphereIntersectsPlane(const kmSphere *a, const kmPlane *b)
    kmVec3 n = {b->a, b->b, b->c};
    kmScalar distance;
    distance = kmVec3Dot(&a->point, &n) - b->d;
-   return (abs(distance) <= a->radius);
+   return (fabs(distance) < a->radius);
 }
 
 kmMat3* kmOBBGetMat3(const kmOBB *pIn, kmMat3 *pOut)
@@ -445,66 +483,66 @@ kmBool kmOBBIntersectsOBB(const kmOBB *a, const kmOBB *b)
     * counteract arithmetic errors when two edges are parallel and
     * their cross product is (near) null. */
    for (i = 0; i < 3; ++i) for (j = 0; j < 3; ++j)
-      absMat.mat[i+j*3] = abs(mat.mat[i+j*3]) + kmEpsilon;
+      absMat.mat[i+j*3] = fabs(mat.mat[i+j*3]) + kmEpsilon;
 
    /* test axes L = A0, L = A1, L = A2 */
    for (i = 0; i < 3; ++i) {
       ra = (i==0?a->aabb.extent.x:i==1?a->aabb.extent.y:a->aabb.extent.z);
       rb = b->aabb.extent.x * absMat.mat[i+0*3] + b->aabb.extent.y * absMat.mat[i+1*3] + b->aabb.extent.z * absMat.mat[i+2*3];
-      if (abs((i==0?translation.x:i==1?translation.y:translation.z)) > ra + rb) return KM_FALSE;
+      if (fabs((i==0?translation.x:i==1?translation.y:translation.z)) > ra + rb) return KM_FALSE;
    }
 
    /* test axes L = B0, L = B1, L = B2 */
    for (i = 0; i < 3; ++i) {
       ra = a->aabb.extent.x * absMat.mat[0+i*3] + a->aabb.extent.y * absMat.mat[1+i*3] + a->aabb.extent.z * absMat.mat[2+i*3];
       rb = (i==0?b->aabb.extent.x:i==1?b->aabb.extent.y:b->aabb.extent.z);
-      if (abs(translation.x * mat.mat[0+i*3] + translation.y * mat.mat[1+i*3] + translation.z * mat.mat[2+i*3]) > ra + rb) return KM_FALSE;
+      if (fabs(translation.x * mat.mat[0+i*3] + translation.y * mat.mat[1+i*3] + translation.z * mat.mat[2+i*3]) > ra + rb) return KM_FALSE;
    }
 
    /* test axis L = A0 x B0 */
    ra = a->aabb.extent.y * absMat.mat[2+0*3] + a->aabb.extent.z * absMat.mat[1+0*3];
    rb = b->aabb.extent.y * absMat.mat[0+2*3] + b->aabb.extent.z * absMat.mat[0+1*3];
-   if (abs(translation.z * mat.mat[1+0*3] - translation.y * mat.mat[2+0*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.z * mat.mat[1+0*3] - translation.y * mat.mat[2+0*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A0 x B1 */
    ra = a->aabb.extent.y * absMat.mat[2+1*3] + a->aabb.extent.z * absMat.mat[1+1*3];
    rb = b->aabb.extent.x * absMat.mat[0+2*3] + b->aabb.extent.z * absMat.mat[0+0*3];
-   if (abs(translation.z * mat.mat[1+1*3] - translation.y * mat.mat[2+1*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.z * mat.mat[1+1*3] - translation.y * mat.mat[2+1*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A0 x B2 */
    ra = a->aabb.extent.y * absMat.mat[2+2*3] + a->aabb.extent.z * absMat.mat[1+2*3];
    rb = b->aabb.extent.x * absMat.mat[0+1*3] + b->aabb.extent.y * absMat.mat[0+0*3];
-   if (abs(translation.z * mat.mat[1+2*3] - translation.y * mat.mat[2+2*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.z * mat.mat[1+2*3] - translation.y * mat.mat[2+2*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A1 x B0 */
    ra = a->aabb.extent.x * absMat.mat[2+0*3] + a->aabb.extent.z * absMat.mat[0+0*3];
    rb = b->aabb.extent.y * absMat.mat[1+2*3] + b->aabb.extent.z * absMat.mat[1+1*3];
-   if (abs(translation.x * mat.mat[2+0*3] - translation.z * mat.mat[0+0*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.x * mat.mat[2+0*3] - translation.z * mat.mat[0+0*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A1 x B1 */
    ra = a->aabb.extent.x * absMat.mat[2+1*3] + a->aabb.extent.z * absMat.mat[0+1*3];
    rb = b->aabb.extent.x * absMat.mat[1+2*3] + b->aabb.extent.z * absMat.mat[1+0*3];
-   if (abs(translation.x * mat.mat[2+1*3] - translation.z * mat.mat[0+1*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.x * mat.mat[2+1*3] - translation.z * mat.mat[0+1*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A1 x B2 */
    ra = a->aabb.extent.x * absMat.mat[2+2*3] + a->aabb.extent.z * absMat.mat[0+2*3];
    rb = b->aabb.extent.x * absMat.mat[1+1*3] + b->aabb.extent.y * absMat.mat[1+0*3];
-   if (abs(translation.x * mat.mat[2+2*3] - translation.z * mat.mat[0+2*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.x * mat.mat[2+2*3] - translation.z * mat.mat[0+2*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A2 x B0 */
    ra = a->aabb.extent.x * absMat.mat[1+0*3] + a->aabb.extent.y * absMat.mat[0+0*3];
    rb = b->aabb.extent.y * absMat.mat[2+2*3] + b->aabb.extent.z * absMat.mat[2+1*3];
-   if (abs(translation.y * mat.mat[0+0*3] - translation.x * mat.mat[1+0*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.y * mat.mat[0+0*3] - translation.x * mat.mat[1+0*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A2 x B1 */
    ra = a->aabb.extent.x * absMat.mat[1+1*3] + a->aabb.extent.y * absMat.mat[0+1*3];
    rb = b->aabb.extent.x * absMat.mat[2+2*3] + b->aabb.extent.z * absMat.mat[2+0*3];
-   if (abs(translation.y * mat.mat[0+1*3] - translation.x * mat.mat[1+1*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.y * mat.mat[0+1*3] - translation.x * mat.mat[1+1*3]) > ra + rb) return KM_FALSE;
 
    /* test axis L = A2 x B2 */
    ra = a->aabb.extent.x * absMat.mat[1+2*3] + a->aabb.extent.y * absMat.mat[0+2*3];
    rb = b->aabb.extent.x * absMat.mat[2+1*3] + b->aabb.extent.y * absMat.mat[2+0*3];
-   if (abs(translation.y * mat.mat[0+2*3] - translation.x * mat.mat[1+2*3]) > ra + rb) return KM_FALSE;
+   if (fabs(translation.y * mat.mat[0+2*3] - translation.x * mat.mat[1+2*3]) > ra + rb) return KM_FALSE;
 
    /* no seperating axis found */
    return KM_TRUE;
@@ -525,9 +563,9 @@ kmBool kmAABBIntersectsSphere(const kmAABB *a, const kmSphere *b)
 
 kmBool kmAABBExtentIntersectsAABBExtent(const kmAABBExtent *a, const kmAABBExtent *b)
 {
-   if (abs(a->point.x - b->point.x) > (a->extent.x + b->extent.x)) return KM_FALSE;
-   if (abs(a->point.y - b->point.y) > (a->extent.y + b->extent.y)) return KM_FALSE;
-   if (abs(a->point.z - b->point.z) > (a->extent.z + b->extent.z)) return KM_FALSE;
+   if (fabs(a->point.x - b->point.x) > (a->extent.x + b->extent.x)) return KM_FALSE;
+   if (fabs(a->point.y - b->point.y) > (a->extent.y + b->extent.y)) return KM_FALSE;
+   if (fabs(a->point.z - b->point.z) > (a->extent.z + b->extent.z)) return KM_FALSE;
    return KM_TRUE;
 }
 
@@ -619,7 +657,7 @@ kmBool kmRay3IntersectAABBExtent(const kmRay3 *ray, const kmAABBExtent *aabbe, f
 {
    float tmin = 0.0f, tmax = FLT_MAX;
 
-   if (abs(ray->dir.x) < kmEpsilon) {
+   if (fabs(ray->dir.x) < kmEpsilon) {
       if (ray->start.x < aabbe->point.x - aabbe->extent.x || ray->start.x > aabbe->point.x + aabbe->extent.x) return KM_FALSE;
    } else {
       float ood = 1.0f / ray->start.x;
@@ -631,7 +669,7 @@ kmBool kmRay3IntersectAABBExtent(const kmRay3 *ray, const kmAABBExtent *aabbe, f
       if (tmin > tmax) return KM_FALSE;
    }
 
-   if (abs(ray->dir.y) < kmEpsilon) {
+   if (fabs(ray->dir.y) < kmEpsilon) {
       if (ray->start.y < aabbe->point.y - aabbe->extent.y || ray->start.y > aabbe->point.y + aabbe->extent.y) return KM_FALSE;
    } else {
       float ood = 1.0f / ray->start.y;
@@ -643,7 +681,7 @@ kmBool kmRay3IntersectAABBExtent(const kmRay3 *ray, const kmAABBExtent *aabbe, f
       if (tmin > tmax) return KM_FALSE;
    }
 
-   if (abs(ray->dir.z) < kmEpsilon) {
+   if (fabs(ray->dir.z) < kmEpsilon) {
       // Ray is parallel to slab. No hit if origin not within slab
       if (ray->start.z < aabbe->point.z - aabbe->extent.z || ray->start.z > aabbe->point.z + aabbe->extent.z) return KM_FALSE;
    } else {
@@ -677,7 +715,7 @@ kmBool kmRay3IntersectAABB(const kmRay3 *ray, const kmAABB *aabb, float *outMin,
 {
    float tmin = 0.0f, tmax = FLT_MAX;
 
-   if (abs(ray->dir.x) < kmEpsilon) {
+   if (fabs(ray->dir.x) < kmEpsilon) {
       if (ray->start.x < aabb->min.x || ray->start.x > aabb->max.x) return KM_FALSE;
    } else {
       float ood = 1.0f / ray->start.x;
@@ -689,7 +727,7 @@ kmBool kmRay3IntersectAABB(const kmRay3 *ray, const kmAABB *aabb, float *outMin,
       if (tmin > tmax) return KM_FALSE;
    }
 
-   if (abs(ray->dir.y) < kmEpsilon) {
+   if (fabs(ray->dir.y) < kmEpsilon) {
       if (ray->start.y < aabb->min.y || ray->start.y > aabb->max.y) return KM_FALSE;
    } else {
       float ood = 1.0f / ray->start.y;
@@ -701,7 +739,7 @@ kmBool kmRay3IntersectAABB(const kmRay3 *ray, const kmAABB *aabb, float *outMin,
       if (tmin > tmax) return KM_FALSE;
    }
 
-   if (abs(ray->dir.z) < kmEpsilon) {
+   if (fabs(ray->dir.z) < kmEpsilon) {
       // Ray is parallel to slab. No hit if origin not within slab
       if (ray->start.z < aabb->min.z || ray->start.z > aabb->max.z) return KM_FALSE;
    } else {
@@ -791,15 +829,14 @@ typedef struct CollisionInData {
    collisionResponseFunction response;
    collisionTestFunction test;
    const void *userData;
-   float slopeEasing;
 } CollisionInData;
 
 typedef struct CollisionOutData {
    CollisionWorld *world;
    const CollisionPrimitive *collider;
    const kmVec3 *contactPoint;
+   const kmVec3 *pushVector;
    const kmVec3 *velocity;
-   const kmVec3 *reflection;
    const void *userData;
 } CollisionOutData;
 
@@ -859,136 +896,111 @@ void _collisionShapeGetPosition(const _CollisionShape *shape, kmVec3 *outPositio
    printf("-!- Shape position function not implemented for %s\n", _collisionTypeString(shape->type));
 }
 
-static void _collisionShapeShapeReflection(_CollisionShape *shape, const _CollisionShape *collider, const kmVec3 *inVelocity, const void *velocityFunction, const void *testFunction, kmVec3 *outReflection)
+static void _collisionShapeShapeContact(const _CollisionShape *packetShape, const _CollisionShape *primitiveShape, const void *packetContactFunction, const void *primitiveContactFunction, kmVec3 *outPush, kmVec3 *outContact)
 {
-   int i;
-   kmVec3 velocity, inverseVelocity;
-   typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
-   typedef void (*_velocityApplyFunc)(const void *a, const kmVec3 *velocity);
-   _collisionTestFunc test = (_collisionTestFunc)testFunction;
-   _velocityApplyFunc shapeVelocity = (_velocityApplyFunc)velocityFunction;
-   assert(shape && collider && inVelocity && testFunction && outReflection);
-   memset(outReflection, 0, sizeof(kmVec3));
+   typedef const kmVec3* (*_contactFunc)(const void *a, const kmVec3 *point, kmVec3 *outPoint);
+   _contactFunc packetContact = (_contactFunc)packetContactFunction;
+   _contactFunc primitiveContact = (_contactFunc)primitiveContactFunction;
 
-   if (!velocityFunction) {
-      printf("-!- Reflection lookup not implemented for %s\n", _collisionTypeString(shape->type));
-      return;
-   }
-
-   /* state before collision */
-   memset(&velocity, 0, sizeof(kmVec3));
-   kmVec3Scale(&inverseVelocity, inVelocity, -1.0f);
-
-   int printRest = 0;
-   for (i = 0; i < 3; ++i) {
-      if (i == 0) velocity.y = inVelocity->y + 0.25;
-      else if (i == 1) velocity.x = inVelocity->x;
-      else if (i == 2) velocity.z = inVelocity->z;
-
-      shapeVelocity(shape->any, &inverseVelocity);
-
-      if (i == 0 && test(shape->any, collider->any)) {
-         printf("VEL: ");
-         kmVec3Print(inVelocity);
-         printRest = 1;
-      }
-
-      kmVec3Scale(&inverseVelocity, &velocity, -1.0f);
-      shapeVelocity(shape->any, &velocity);
-
-      if (printRest) {
-         printf("BT%d: ", i);
-         kmVec3Print(&velocity);
-      }
-
-      if (test(shape->any, collider->any)) {
-         if (i == 0) {
-            outReflection->y = -velocity.y;
-            velocity.y = 0.0f;
-            if (printRest) puts("YCOL");
-         } else if (i == 1) {
-            outReflection->x = -velocity.x;
-            velocity.x = 0.0f;
-            if (printRest) puts("XCOL");
-         } else if (i == 2) {
-            outReflection->z = -velocity.z;
-            velocity.z = 0.0f;
-            if (printRest) puts("ZCOL");
-         }
-      }
-
-      if (printRest) {
-         printf("AT%d: ", i);
-         kmVec3Print(&velocity);
-         printf("IV%d: ", i);
-         kmVec3Print(&inverseVelocity);
-      }
-   }
-
-   if (printRest) {
-      printf("REF: ");
-      kmVec3Print(outReflection);
-   }
-}
-
-static void _collisionShapeShapeContact(const _CollisionShape *shape, const _CollisionShape *collider, const void *closestFunction, kmVec3 *outContact)
-{
-   typedef const kmVec3* (*_closestPointFunc)(const void *a, const kmVec3 *point, kmVec3 *outPoint);
-   _closestPointFunc closestPoint = (_closestPointFunc)closestFunction;
+   assert(packetShape && primitiveShape && packetContactFunction && primitiveContactFunction && outPush && outContact);
+   memset(outPush, 0, sizeof(kmVec3));
    memset(outContact, 0, sizeof(kmVec3));
 
-   if (!closestFunction) {
-      printf("-!- Closest point lookup not implemented for %s\n", _collisionTypeString(collider->type));
-      return;
+   kmVec3 packetCenter, penetrativeContact;
+   _collisionShapeGetPosition(packetShape, &packetCenter);
+   primitiveContact(primitiveShape->any, &packetCenter, outContact);
+   packetContact(packetShape->any, outContact, &penetrativeContact);
+
+   kmVec3 diff;
+   float contactDist = kmVec3Length(kmVec3Subtract(&diff, outContact, &packetCenter));
+   float penetrativeDist = kmVec3Length(kmVec3Subtract(&diff, &penetrativeContact, &packetCenter));
+   if (contactDist > penetrativeDist) kmVec3Swap(outContact, &penetrativeContact);
+   kmVec3Subtract(outPush, outContact, &penetrativeContact);
+
+   /* sanity checking (prevents getting stuck) */
+   static const kmVec3 zero = {0,0,0};
+   if (kmVec3AreEqual(outPush, &zero)) {
+      kmVec3 primitiveCenter;
+      _collisionShapeGetPosition(primitiveShape, &primitiveCenter);
+      kmVec3Subtract(outPush, &packetCenter, &primitiveCenter);
+      kmVec3Normalize(outPush, outPush);
+      puts("-!- STUCK");
    }
 
-   kmVec3 point;
-   _collisionShapeGetPosition(shape, &point);
-   closestPoint(collider->any, &point, outContact);
-
-   // debug
+   /* debug */
    glhckObject *o = glhckCubeNew(5.0);
    kmVec3 pos = *outContact;
    pos.z += 50.0;
+   kmVec3 pos2 = penetrativeContact;
+   pos2.z += 50.0;
    glhckMaterial *mat = glhckMaterialNew(NULL);
    glhckObjectMaterial(o, mat);
    glhckMaterialDiffuseb(mat, 0, 0, 255, 255);
    glhckObjectPosition(o, &pos);
    glhckObjectRender(o);
+   glhckMaterialDiffuseb(mat, 255, 0, 255, 255);
+   glhckObjectPosition(o, &pos2);
+   glhckObjectRender(o);
    glhckMaterialFree(mat);
    glhckObjectFree(o);
 }
 
-static void _collisionWorldPrimitiveTestWithPacket(CollisionWorld *world, const _CollisionPrimitive *primitive, _CollisionPacket *packet, const void *testFunction, const void *closestFunction, const void *velocityFunction)
+static void _collisionWorldTestPacketAgainstPrimitive(CollisionWorld *world, _CollisionPacket *packet, const _CollisionPrimitive *primitive, const void *testFunction, const void *packetContactFunction, const void *primitiveContactFunction, const void *packetVelocityFunction)
 {
    typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
    _collisionTestFunc test = (_collisionTestFunc)testFunction;
+   typedef void (*_velocityApplyFunc)(const void *a, const kmVec3 *velocity);
+   _velocityApplyFunc velocity = (_velocityApplyFunc)packetVelocityFunction;
    assert(world && primitive && packet);
 
-   if (!testFunction) {
-      printf("-!- Intersection test not implemented for %s <-> %s\n",
-            _collisionTypeString(packet->shape.type),
-            _collisionTypeString(primitive->shape.type));
+   /* test for missing implementations */
+   if (!testFunction || !packetContactFunction || !primitiveContactFunction || !packetVelocityFunction) {
+      if (!testFunction) {
+         printf("-!- Intersection test not implemented for %s <-> %s\n",
+               _collisionTypeString(packet->shape.type),
+               _collisionTypeString(primitive->shape.type));
+      }
+      if (!packetContactFunction) {
+         printf("-!- Contact point function not implemented for %s\n", _collisionTypeString(packet->shape.type));
+      }
+      if (!primitiveContactFunction) {
+         printf("-!- Contact point function not implemented for %s\n", _collisionTypeString(primitive->shape.type));
+      }
+      if (!packetVelocityFunction) {
+         printf("-!- Velocity function not implemented for %s\n", _collisionTypeString(packet->shape.type));
+      }
       return;
    }
 
+   /* intersection test */
    if (!test(packet->shape.any, primitive->shape.any))
       return;
 
-   // printf("%s COLLIDE %s\n", _collisionTypeString(packet->shape.type), _collisionTypeString(primitive->shape.type));
-
    if (packet->inData->response) {
-      kmVec3 contactPoint, reflection;
-      _collisionShapeShapeContact(&packet->shape, &primitive->shape, closestFunction, &contactPoint);
-      _collisionShapeShapeReflection(&packet->shape, &primitive->shape, &packet->inData->velocity, velocityFunction, testFunction, &reflection);
+      kmVec3 contactPoint, pushVector;
+      _collisionShapeShapeContact(&packet->shape, &primitive->shape, packetContactFunction, primitiveContactFunction, &pushVector, &contactPoint);
+
+      float scale = 0;
+      do {
+         ++scale;
+         velocity(packet->shape.any, &pushVector);
+      } while (scale < 15 && test(packet->shape.any, primitive->shape.any));
+      kmVec3Scale(&pushVector, &pushVector, scale);
+
+      if (pushVector.y < -30 || pushVector.y > 30 || packet->collisions > 20) {
+         printf("-!- WEIRD: %s <-> %s\n", _collisionTypeString(packet->shape.type), _collisionTypeString(primitive->shape.type));
+         printf("-!- PUSHV: "); kmVec3Print(&pushVector);
+         puts("-!- Press space to continue");
+         PAUSE_FRAME = 1;
+      }
 
       CollisionOutData outData;
       memset(&outData, 0, sizeof(outData));
       outData.world = world;
       outData.collider = primitive;
-      outData.velocity = &packet->inData->velocity;
-      outData.reflection = &reflection;
+      outData.pushVector = &pushVector;
       outData.contactPoint = &contactPoint;
+      outData.velocity = &packet->inData->velocity;
       outData.userData = packet->inData->userData;
       packet->inData->response(&outData);
    }
@@ -1036,28 +1048,31 @@ static unsigned int _collisionWorldCollide(CollisionWorld *world, _CollisionType
    testFunction[COLLISION_OBB][COLLISION_AABB] = kmOBBIntersectsAABB;
    testFunction[COLLISION_OBB][COLLISION_AABBE] = kmOBBIntersectsAABBExtent;
 
-   void *closestFunction[COLLISION_LAST];
-   memset(closestFunction, 0, sizeof(closestFunction));
-   closestFunction[COLLISION_AABB] = kmAABBClosestPointTo;
-   closestFunction[COLLISION_AABBE] = kmAABBExtentClosestPointTo;
-   closestFunction[COLLISION_SPHERE] = kmSphereClosestPointTo;
-
    void *velocityFunction[COLLISION_LAST];
    memset(velocityFunction, 0, sizeof(velocityFunction));
    velocityFunction[COLLISION_AABB] = kmAABBApplyVelocity;
    velocityFunction[COLLISION_AABBE] = kmAABBExtentApplyVelocity;
    velocityFunction[COLLISION_SPHERE] = kmSphereApplyVelocity;
-   velocityFunction[COLLISION_OBB] = kmOBBApplyVelocity;
 
-   for (p = world->primitives; p; p = p->next) {
-      /* ask user if we should even bother testing */
-      if (data->test && !data->test(data, p))
-         continue;
+   void *contactFunction[COLLISION_LAST];
+   memset(contactFunction, 0, sizeof(contactFunction));
+   contactFunction[COLLISION_AABB] = kmAABBClosestPointTo;
+   contactFunction[COLLISION_AABBE] = kmAABBExtentClosestPointTo;
+   contactFunction[COLLISION_SPHERE] = kmSphereClosestPointTo;
 
-      /* do the test */
-      _collisionWorldPrimitiveTestWithPacket(world, p, &packet,
-            testFunction[packet.shape.type][p->shape.type],
-            closestFunction[p->shape.type], velocityFunction[packet.shape.type]);
+   unsigned int oldCollisions = -1;
+   while (oldCollisions != packet.collisions) {
+      oldCollisions = packet.collisions;
+      for (p = world->primitives; p; p = p->next) {
+         /* ask user if we should even bother testing */
+         if (data->test && !data->test(data, p))
+            continue;
+
+         /* do the test */
+         _collisionWorldTestPacketAgainstPrimitive(world, &packet, p, testFunction[packet.shape.type][p->shape.type],
+               contactFunction[packet.shape.type], contactFunction[p->shape.type], velocityFunction[packet.shape.type]);
+      }
+      if (!data->response) break;
    }
 
    return packet.collisions;
@@ -1322,7 +1337,7 @@ static kmVec3* kmMat3ToEuler(kmVec3 *pOut, kmMat3 *pIn)
       float z1 = atan2f(pIn->mat[1] / cos(y1), pIn->mat[0] / cos(y1));
 
       // Find out shortest rotation
-      if ((abs(x1) + abs(y1) + abs(z1)) <= (abs(x2) + abs(y2) + abs(z2))) {
+      if ((fabs(x1) + fabs(y1) + fabs(z1)) <= (fabs(x2) + fabs(y2) + fabs(z2))) {
          pOut->x = x1;
          pOut->y = y1;
          pOut->z = z1;
@@ -1433,7 +1448,7 @@ static void aabbResponse(const CollisionOutData *collision)
       if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
    }
 
-   kmAABBApplyVelocity(aabb, collision->reflection);
+   kmAABBApplyVelocity(aabb, collision->pushVector);
 }
 
 static void aabbeResponse(const CollisionOutData *collision)
@@ -1447,7 +1462,7 @@ static void aabbeResponse(const CollisionOutData *collision)
       if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
    }
 
-   kmAABBExtentApplyVelocity(aabbe, collision->reflection);
+   kmAABBExtentApplyVelocity(aabbe, collision->pushVector);
 }
 
 static void obbResponse(const CollisionOutData *collision)
@@ -1471,52 +1486,12 @@ static void sphereResponse(const CollisionOutData *collision)
       if (mat) glhckMaterialDiffuseb(mat, 255, 0, 0, 255);
    }
 
-#if 1
-   if (collisionPrimitiveGetUserData(collision->collider) == tests[0].shape.any) {
-      kmVec3 velocity;
-      velocity.x = collision->reflection->x*-1;
-      velocity.y = collision->reflection->y*-1;
-      velocity.z = collision->reflection->z*-1;
-      kmAABBApplyVelocity(tests[0].shape.aabb, &velocity);
-
-      CollisionInData colData;
-      memset(&colData, 0, sizeof(colData));
-      memcpy(&colData.velocity, &velocity, sizeof(kmVec3));
-      PrimObjPair pair;
-      pair.primitive = tests[0].shape.any;
-      pair.object = NULL;
-      colData.response = tests[0].response;
-      colData.test = shouldTestAgainst;
-      colData.userData = &pair;
-      collisionWorldCollideAABB(collision->world, tests[0].shape.aabb, &colData);
-   }
-
-   if (collisionPrimitiveGetUserData(collision->collider) == tests[1].shape.any) {
-      kmVec3 velocity;
-      velocity.x = collision->reflection->x*-1;
-      velocity.y = collision->reflection->y*-1;
-      velocity.z = collision->reflection->z*-1;
-      kmAABBExtentApplyVelocity(tests[1].shape.aabbe, &velocity);
-
-      CollisionInData colData;
-      memset(&colData, 0, sizeof(colData));
-      memcpy(&colData.velocity, &velocity, sizeof(kmVec3));
-      PrimObjPair pair;
-      pair.primitive = tests[1].shape.any;
-      pair.object = NULL;
-      colData.response = tests[1].response;
-      colData.test = shouldTestAgainst;
-      colData.userData = &pair;
-      collisionWorldCollideAABBExtent(collision->world, tests[1].shape.aabbe, &colData);
-   }
-#endif
-
-   kmSphereApplyVelocity(sphere, collision->reflection);
+   kmSphereApplyVelocity(sphere, collision->pushVector);
 
 #if 1
-   sphereVelocity.x -= (collision->contactPoint->x - sphere->point.x)*0.001;
-   sphereVelocity.y -= (collision->contactPoint->y - sphere->point.y)*0.001;
-   sphereVelocity.z -= (collision->contactPoint->z - sphere->point.z)*0.001;
+   sphereVelocity.x -= (collision->contactPoint->x - sphere->point.x)*0.0001;
+   sphereVelocity.y -= (collision->contactPoint->y - sphere->point.y)*0.0001;
+   sphereVelocity.z -= (collision->contactPoint->z - sphere->point.z)*0.0001;
 #endif
 }
 
@@ -1741,7 +1716,6 @@ static void run(GLFWwindow *window)
             colData.velocity = (kmVec3){ 0, 0.1, 0 };
 
             if (test->type == PRIMITIVE_SPHERE) {
-               colData.slopeEasing = 0.4;
                colData.velocity.x += glfwGetKey(window, GLFW_KEY_RIGHT) * 0.1;
                colData.velocity.x -= glfwGetKey(window, GLFW_KEY_LEFT) * 0.1;
 
@@ -1947,6 +1921,11 @@ static void run(GLFWwindow *window)
       }
 
       glfwSwapBuffers(window);
+      while (PAUSE_FRAME) {
+         glfwPollEvents();
+         PAUSE_FRAME = !glfwGetKey(window, GLFW_KEY_SPACE);
+      }
+
       glhckRenderClear(GLHCK_DEPTH_BUFFER | GLHCK_COLOR_BUFFER);
    }
 }
