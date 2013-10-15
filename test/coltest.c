@@ -402,16 +402,17 @@ kmSphere* kmSphereFromAABB(kmSphere *sphere, const kmAABB *aabb)
    return sphere;
 }
 
+/* TODO: Figure out why I must error with +1.0f here */
 kmBool kmSphereIntersectsAABBExtent(const kmSphere *a, const kmAABBExtent *b)
 {
    if(kmAABBExtentContainsPoint(b, &a->point)) return KM_TRUE;
-   kmScalar distance = kmSqDistPointAABBExtent(&a->point, b);
+   kmScalar distance = kmSqDistPointAABBExtent(&a->point, b) + 1.0f;
    return (distance < a->radius * a->radius);
 }
 
 kmBool kmSphereIntersectsAABB(const kmSphere *a, const kmAABB *b)
 {
-   kmScalar distance = kmSqDistPointAABB(&a->point, b);
+   kmScalar distance = kmSqDistPointAABB(&a->point, b) + 1.0f;
    return (distance < a->radius * a->radius);
 }
 
@@ -420,7 +421,7 @@ kmBool kmSphereIntersectsSphere(const kmSphere *a, const kmSphere *b)
    kmVec3 vector;
    kmScalar distance, radiusSum;
    kmVec3Subtract(&vector, &a->point, &b->point);
-   distance = kmVec3LengthSq(&vector);
+   distance = kmVec3LengthSq(&vector) + 1.0f;
    radiusSum = a->radius + b->radius;
    return (distance < radiusSum * radiusSum);
 }
@@ -428,7 +429,7 @@ kmBool kmSphereIntersectsSphere(const kmSphere *a, const kmSphere *b)
 kmBool kmSphereIntersectsCapsule(const kmSphere *a, const kmCapsule *b)
 {
    kmScalar distance, radiusSum;
-   distance = kmVec3LengthSqSegment(&b->pointA, &b->pointB, &a->point);
+   distance = kmVec3LengthSqSegment(&b->pointA, &b->pointB, &a->point) + 1.0f;
    radiusSum = a->radius + b->radius;
    return (distance < radiusSum * radiusSum);
 }
@@ -438,7 +439,7 @@ kmBool kmCapsuleIntersectsCapsule(const kmCapsule *a, const kmCapsule *b)
    kmScalar s, t;
    kmVec3 c1, c2;
    kmScalar distance, radiusSum;
-   distance = kmClosestPointFromSegments(&a->pointA, &a->pointB, &b->pointA, &b->pointB, &s, &s, &c1, &c2);
+   distance = kmClosestPointFromSegments(&a->pointA, &a->pointB, &b->pointA, &b->pointB, &s, &s, &c1, &c2) + 1.0f;
    radiusSum = a->radius + b->radius;
    return (distance < radiusSum * radiusSum);
 }
@@ -447,7 +448,7 @@ kmBool kmSphereIntersectsPlane(const kmSphere *a, const kmPlane *b)
 {
    kmVec3 n = {b->a, b->b, b->c};
    kmScalar distance;
-   distance = kmVec3Dot(&a->point, &n) - b->d;
+   distance = kmVec3Dot(&a->point, &n) - b->d + 1.0f;
    return (fabs(distance) < a->radius);
 }
 
@@ -810,7 +811,10 @@ typedef struct _CollisionPrimitive {
 } _CollisionPrimitive;
 
 typedef struct _CollisionWorld {
+   /* collision primitives living under the world */
    _CollisionPrimitive *primitives;
+
+   /* user data */
    void *userData;
 } _CollisionWorld;
 
@@ -825,9 +829,9 @@ typedef int (*collisionTestFunction)(const struct CollisionInData *data, const C
 
 /* public */
 typedef struct CollisionInData {
-   kmVec3 velocity;
-   collisionResponseFunction response;
    collisionTestFunction test;
+   collisionResponseFunction response;
+   const kmVec3 *velocity;
    const void *userData;
 } CollisionInData;
 
@@ -840,30 +844,69 @@ typedef struct CollisionOutData {
    const void *userData;
 } CollisionOutData;
 
-typedef struct CollisionResponseInData {
-   kmVec3 gravity;
-} CollisionReponseInData;
-
-typedef struct CollisionResponseOutData {
-   kmVec3 position;
-   char falling;
-} CollisionResponseOutData;
-
 /* internal */
 typedef struct _CollisionPacket {
    /* shape for packet */
-   struct _CollisionShape shape;
+   struct _CollisionShape *shape;
+
+   /* sweep shape for packet (if any) */
+   struct _CollisionShape *sweep;
 
    /* internal sliding response velocity */
    kmVec3 velocity;
 
-   /* input data we use to calculate out data */
-   const CollisionInData *inData;
+   /* input data from user for this packet */
+   const CollisionInData *data;
 
    /* number of collisions */
    unsigned int collisions;
 } _CollisionPacket;
 
+/* safe global pointers */
+static void *_collisionTestFunctions[COLLISION_LAST][COLLISION_LAST];
+static void *_collisionVelocityFunctions[COLLISION_LAST];
+static void *_collisionContactFunctions[COLLISION_LAST];
+static void _collisionInit(void)
+{
+   /* setup test functions */
+   memset(_collisionTestFunctions, 0, sizeof(_collisionTestFunctions));
+
+   /* aabb vs. x */
+   _collisionTestFunctions[COLLISION_AABB][COLLISION_AABB] = kmAABBIntersectsAABB;
+   _collisionTestFunctions[COLLISION_AABB][COLLISION_SPHERE] = kmAABBIntersectsSphere;
+   _collisionTestFunctions[COLLISION_AABB][COLLISION_AABBE] = kmAABBIntersectsAABBExtent;
+   _collisionTestFunctions[COLLISION_AABB][COLLISION_OBB] = kmAABBIntersectsOBB;
+
+   /* aabbe vs. x */
+   _collisionTestFunctions[COLLISION_AABBE][COLLISION_AABBE] = kmAABBExtentIntersectsAABBExtent;
+   _collisionTestFunctions[COLLISION_AABBE][COLLISION_SPHERE] = kmAABBExtentIntersectsSphere;
+   _collisionTestFunctions[COLLISION_AABBE][COLLISION_AABB] = kmAABBExtentIntersectsAABB;
+   _collisionTestFunctions[COLLISION_AABBE][COLLISION_OBB] = kmAABBExtentIntersectsOBB;
+
+   /* sphere vs. x */
+   _collisionTestFunctions[COLLISION_SPHERE][COLLISION_SPHERE] = kmSphereIntersectsSphere;
+   _collisionTestFunctions[COLLISION_SPHERE][COLLISION_AABB] = kmSphereIntersectsAABB;
+   _collisionTestFunctions[COLLISION_SPHERE][COLLISION_AABBE] = kmSphereIntersectsAABBExtent;
+
+   /* obb vs. x */
+   _collisionTestFunctions[COLLISION_OBB][COLLISION_OBB] = kmOBBIntersectsOBB;
+   _collisionTestFunctions[COLLISION_OBB][COLLISION_AABB] = kmOBBIntersectsAABB;
+   _collisionTestFunctions[COLLISION_OBB][COLLISION_AABBE] = kmOBBIntersectsAABBExtent;
+
+   /* setup velocity functions */
+   memset(_collisionVelocityFunctions, 0, sizeof(_collisionVelocityFunctions));
+   _collisionVelocityFunctions[COLLISION_AABB] = kmAABBApplyVelocity;
+   _collisionVelocityFunctions[COLLISION_AABBE] = kmAABBExtentApplyVelocity;
+   _collisionVelocityFunctions[COLLISION_SPHERE] = kmSphereApplyVelocity;
+
+   /* setup contact functions */
+   memset(_collisionContactFunctions, 0, sizeof(_collisionContactFunctions));
+   _collisionContactFunctions[COLLISION_AABB] = kmAABBClosestPointTo;
+   _collisionContactFunctions[COLLISION_AABBE] = kmAABBExtentClosestPointTo;
+   _collisionContactFunctions[COLLISION_SPHERE] = kmSphereClosestPointTo;
+}
+
+/* get string for collision shape type */
 const char* _collisionTypeString(_CollisionType type)
 {
    switch (type) {
@@ -878,6 +921,7 @@ const char* _collisionTypeString(_CollisionType type)
    return "INVALID TYPE";
 }
 
+/* get position of collision shape */
 void _collisionShapeGetPosition(const _CollisionShape *shape, kmVec3 *outPosition)
 {
    assert(shape && outPosition);
@@ -899,37 +943,35 @@ void _collisionShapeGetPosition(const _CollisionShape *shape, kmVec3 *outPositio
    printf("-!- Shape position function not implemented for %s\n", _collisionTypeString(shape->type));
 }
 
-static void _collisionShapeShapeContact(const _CollisionShape *packetShape, const _CollisionShape *primitiveShape, const void *packetContactFunction, const void *primitiveContactFunction, kmVec3 *outContact, kmVec3 *outPush)
+/* calculate contact point and push vector for shape */
+static void _collisionShapeShapeContact(const _CollisionShape *packetShape, const _CollisionShape *primitiveShape, kmVec3 *outContact, kmVec3 *outPush)
 {
+   static const kmVec3 zero = {0,0,0};
+   kmVec3 packetCenter, penetrativeContact, difference;
    typedef const kmVec3* (*_contactFunc)(const void *a, const kmVec3 *point, kmVec3 *outPoint);
-   _contactFunc packetContact = (_contactFunc)packetContactFunction;
-   _contactFunc primitiveContact = (_contactFunc)primitiveContactFunction;
-
-   assert(packetShape && primitiveShape && packetContactFunction && primitiveContactFunction && outContact);
+   _contactFunc packetContact = _collisionContactFunctions[packetShape->type];
+   _contactFunc primitiveContact = _collisionContactFunctions[primitiveShape->type];
+   assert(packetShape && primitiveShape && outContact && outPush);
    memset(outPush, 0, sizeof(kmVec3));
    memset(outContact, 0, sizeof(kmVec3));
 
-   kmVec3 packetCenter, penetrativeContact;
+   /* get contact points for packet and primitive */
    _collisionShapeGetPosition(packetShape, &packetCenter);
    primitiveContact(primitiveShape->any, &packetCenter, outContact);
    packetContact(packetShape->any, outContact, &penetrativeContact);
 
-   kmVec3 diff;
-   float contactDist = kmVec3Length(kmVec3Subtract(&diff, outContact, &packetCenter));
-   float penetrativeDist = kmVec3Length(kmVec3Subtract(&diff, &penetrativeContact, &packetCenter));
+   /* figure out real contact normal from comparing the distances */
+   float contactDist = kmVec3Length(kmVec3Subtract(&difference, outContact, &packetCenter));
+   float penetrativeDist = kmVec3Length(kmVec3Subtract(&difference, &penetrativeContact, &packetCenter));
    if (contactDist > penetrativeDist) kmVec3Swap(outContact, &penetrativeContact);
    kmVec3Subtract(outPush, outContact, &penetrativeContact);
 
    /* sanity checking (prevents getting stuck) */
-   static const kmVec3 zero = {0,0,0};
    if (kmVec3AreEqual(outPush, &zero)) {
       kmVec3 primitiveCenter;
       _collisionShapeGetPosition(primitiveShape, &primitiveCenter);
       kmVec3Subtract(outPush, &packetCenter, &primitiveCenter);
       kmVec3Normalize(outPush, outPush);
-      puts("-!- STUCK");
-      kmVec3Print(outContact);
-      kmVec3Print(&penetrativeContact);
    }
 
    /* debug */
@@ -950,56 +992,67 @@ static void _collisionShapeShapeContact(const _CollisionShape *packetShape, cons
    glhckObjectFree(o);
 }
 
-static void _collisionWorldTestPacketAgainstPrimitive(CollisionWorld *world, _CollisionPacket *packet, const _CollisionPrimitive *primitive, const void *testFunction, const void *packetContactFunction, const void *primitiveContactFunction, const void *packetVelocityFunction)
+/* test packet against primitive */
+static void _collisionWorldTestPacketAgainstPrimitive(CollisionWorld *world, _CollisionPacket *packet, const _CollisionPrimitive *primitive)
 {
    typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
    typedef void (*_velocityApplyFunc)(const void *a, const kmVec3 *velocity);
-   _collisionTestFunc test = (_collisionTestFunc)testFunction;
-   _velocityApplyFunc velocity = (_velocityApplyFunc)packetVelocityFunction;
-   assert(world && primitive && packet);
+   typedef const kmVec3* (*_contactFunc)(const void *a, const kmVec3 *point, kmVec3 *outPoint);
+   _collisionTestFunc intersection = _collisionTestFunctions[packet->shape->type][primitive->shape.type];
+   _velocityApplyFunc velocity = _collisionVelocityFunctions[packet->shape->type];
+   _contactFunc packetContactFunction = _collisionContactFunctions[packet->shape->type];
+   _contactFunc primitiveContactFunction = _collisionContactFunctions[primitive->shape.type];
+   assert(world && packet && primitive);
 
    /* test for missing implementations */
-   if (!testFunction || !packetContactFunction || !primitiveContactFunction || !packetVelocityFunction) {
-      if (!testFunction) {
+   if (!intersection || !velocity || !packetContactFunction || !primitiveContactFunction) {
+      if (!intersection) {
          printf("-!- Intersection test not implemented for %s <-> %s\n",
-               _collisionTypeString(packet->shape.type),
+               _collisionTypeString(packet->shape->type),
                _collisionTypeString(primitive->shape.type));
       }
       if (!packetContactFunction) {
-         printf("-!- Contact point function not implemented for %s\n", _collisionTypeString(packet->shape.type));
+         printf("-!- Contact point function not implemented for %s\n", _collisionTypeString(packet->shape->type));
       }
       if (!primitiveContactFunction) {
          printf("-!- Contact point function not implemented for %s\n", _collisionTypeString(primitive->shape.type));
       }
-      if (!packetVelocityFunction) {
-         printf("-!- Velocity function not implemented for %s\n", _collisionTypeString(packet->shape.type));
+      if (!velocity) {
+         printf("-!- Velocity function not implemented for %s\n", _collisionTypeString(packet->shape->type));
       }
       return;
    }
 
-   /* intersection test */
-   if (!test(packet->shape.any, primitive->shape.any))
+   /* ask user if we should even bother testing */
+   if (packet->data->test && !packet->data->test(packet->data, primitive))
       return;
 
-   if (packet->inData->response) {
-      kmVec3 contactPoint, pushVector;
-      _collisionShapeShapeContact(&packet->shape, &primitive->shape,
-            packetContactFunction, primitiveContactFunction, &contactPoint, &pushVector);
+   /* intersection test */
+   if (!intersection(packet->shape->any, primitive->shape.any))
+      return;
 
-      float scale = 0;
+   if (packet->data->response) {
+      float scale = 0.0f;
+      kmVec3 contactPoint, pushVector;
+      _collisionShapeShapeContact(packet->shape, &primitive->shape, &contactPoint, &pushVector);
+
+      /* grow push vector until we are out */
       do {
          ++scale;
-         velocity(packet->shape.any, &pushVector);
-      } while (scale < 15 && test(packet->shape.any, primitive->shape.any));
+         velocity(packet->shape->any, &pushVector);
+      } while (scale < 15.0f && intersection(packet->shape->any, primitive->shape.any));
       kmVec3Scale(&pushVector, &pushVector, scale);
 
+#if 0
       if (pushVector.y < -30 || pushVector.y > 30 || packet->collisions > 20) {
-         printf("-!- WEIRD: %s <-> %s\n", _collisionTypeString(packet->shape.type), _collisionTypeString(primitive->shape.type));
+         printf("-!- WEIRD: %s <-> %s\n", _collisionTypeString(packet->shape->type), _collisionTypeString(primitive->shape.type));
          printf("-!- PUSHV: "); kmVec3Print(&pushVector);
          puts("-!- Press space to continue");
          PAUSE_FRAME = 1;
       }
+#endif
 
+      /* send response */
       CollisionOutData outData;
       memset(&outData, 0, sizeof(outData));
       outData.world = world;
@@ -1007,156 +1060,122 @@ static void _collisionWorldTestPacketAgainstPrimitive(CollisionWorld *world, _Co
       outData.pushVector = &pushVector;
       outData.contactPoint = &contactPoint;
       outData.velocity = &packet->velocity;
-      outData.userData = packet->inData->userData;
-      packet->inData->response(&outData);
+      outData.userData = packet->data->userData;
+      packet->data->response(&outData);
       memcpy(&packet->velocity, &pushVector, sizeof(kmVec3));
    }
 
    ++packet->collisions;
 }
 
-static unsigned int _collisionWorldCollide(CollisionWorld *world, _CollisionType type, void *shape, const kmAABBExtent *sweep, const CollisionInData *data)
+/* sweep test against collision world primitives using the packet */
+static int _collisionWorldTestPacketSweep(CollisionWorld *world, _CollisionPacket *packet)
+{
+   float nearestSweepDistance = FLT_MAX;
+   _CollisionPrimitive *p, *nearestSweepPrimitive = NULL;
+   kmVec3 packetCenter, inverseVelocity, nearestContact, beforePoint;
+   typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
+   typedef void (*_velocityApplyFunc)(const void *a, const kmVec3 *velocity);
+   _velocityApplyFunc velocity = _collisionVelocityFunctions[packet->shape->type];
+
+   /* move packet shape to before contact phase */
+   _collisionShapeGetPosition(packet->shape, &beforePoint);
+   kmVec3Scale(&inverseVelocity, &packet->velocity, -1.0f);
+   velocity(packet->shape->any, &inverseVelocity);
+
+   /* run through primitives to see what we need to sweep against */
+   for (p = world->primitives; p; p = p->next) {
+      /* ask user if we should even bother testing */
+      if (packet->data->test && !packet->data->test(packet->data, p))
+         continue;
+
+      /* intersection test */
+      _collisionTestFunc intersection = _collisionTestFunctions[packet->sweep->type][p->shape.type];
+      if (!intersection(packet->sweep->any, p->shape.any))
+         continue;
+
+      /* figure out contact point */
+      kmVec3 pushVector, contact;
+      _collisionShapeShapeContact(packet->shape, &p->shape, &contact, &pushVector);
+      float distance = kmVec3Length(&pushVector)+1;
+      if (distance < nearestSweepDistance) {
+         memcpy(&nearestContact, &contact, sizeof(kmVec3));
+         nearestSweepDistance = distance;
+         nearestSweepPrimitive = p;
+      }
+   }
+
+   /* no collision */
+   if (!nearestSweepPrimitive) return 0;
+
+   /* do we need to sweep? */
+   if (packet->data->response && nearestSweepDistance > 1.0f) {
+      kmVec3 offsetVelocity;
+      kmVec3 afterPoint, pushVector;
+      float velocityDist = kmVec3Length(&packet->velocity);
+      kmVec3Scale(&offsetVelocity, &packet->velocity, nearestSweepDistance/velocityDist);
+      velocity(packet->shape->any, &offsetVelocity);
+
+      _collisionShapeGetPosition(packet->shape, &afterPoint);
+      kmVec3Subtract(&pushVector, &afterPoint, &beforePoint);
+
+      /* send response */
+      CollisionOutData outData;
+      memset(&outData, 0, sizeof(outData));
+      outData.world = world;
+      outData.collider = nearestSweepPrimitive;
+      outData.pushVector = &pushVector;
+      outData.contactPoint = &nearestContact;
+      outData.velocity = &packet->velocity;
+      outData.userData = packet->data->userData;
+      packet->data->response(&outData);
+      memcpy(&packet->velocity, &pushVector, sizeof(kmVec3));
+
+      /* debug */
+      glhckObject *o = glhckSphereNew(50.0f);
+      glhckMaterial *mat = glhckMaterialNew(NULL);
+      glhckObjectMaterial(o, mat);
+      glhckMaterialDiffuseb(mat, 0, 0, 255, 255);
+      glhckObjectPosition(o, &packet->shape->sphere->point);
+      glhckObjectRender(o);
+      glhckMaterialFree(mat);
+      glhckObjectFree(o);
+   } else {
+      velocity(packet->shape->any, &packet->velocity);
+   }
+
+   /* 1 collision */
+   return 1;
+}
+
+static unsigned int _collisionWorldCollide(CollisionWorld *world, _CollisionShape *shape, _CollisionShape *sweep, const CollisionInData *data)
 {
    static const kmVec3 zero = {0,0,0};
    _CollisionPacket packet;
    _CollisionPrimitive *p;
    assert(world && shape && data);
 
-   if (kmVec3AreEqual(&data->velocity, &zero))
+   /* we are not moving anywhere, lets assume no collisions */
+   if (data->velocity && kmVec3AreEqual(data->velocity, &zero))
       return 0;
 
+   /* setup packet */
    memset(&packet, 0, sizeof(packet));
-   packet.shape.type = type;
-   packet.shape.any = shape;
-   packet.inData = data;
-   memcpy(&packet.velocity, &data->velocity, sizeof(kmVec3));
-
-   void *testFunction[COLLISION_LAST][COLLISION_LAST];
-   memset(testFunction, 0, sizeof(testFunction));
-
-   /* aabb vs. x */
-   testFunction[COLLISION_AABB][COLLISION_AABB] = kmAABBIntersectsAABB;
-   testFunction[COLLISION_AABB][COLLISION_SPHERE] = kmAABBIntersectsSphere;
-   testFunction[COLLISION_AABB][COLLISION_AABBE] = kmAABBIntersectsAABBExtent;
-   testFunction[COLLISION_AABB][COLLISION_OBB] = kmAABBIntersectsOBB;
-
-   /* aabbe vs. x */
-   testFunction[COLLISION_AABBE][COLLISION_AABBE] = kmAABBExtentIntersectsAABBExtent;
-   testFunction[COLLISION_AABBE][COLLISION_SPHERE] = kmAABBExtentIntersectsSphere;
-   testFunction[COLLISION_AABBE][COLLISION_AABB] = kmAABBExtentIntersectsAABB;
-   testFunction[COLLISION_AABBE][COLLISION_OBB] = kmAABBExtentIntersectsOBB;
-
-   /* sphere vs. x */
-   testFunction[COLLISION_SPHERE][COLLISION_SPHERE] = kmSphereIntersectsSphere;
-   testFunction[COLLISION_SPHERE][COLLISION_AABB] = kmSphereIntersectsAABB;
-   testFunction[COLLISION_SPHERE][COLLISION_AABBE] = kmSphereIntersectsAABBExtent;
-
-   /* obb vs. x */
-   testFunction[COLLISION_OBB][COLLISION_OBB] = kmOBBIntersectsOBB;
-   testFunction[COLLISION_OBB][COLLISION_AABB] = kmOBBIntersectsAABB;
-   testFunction[COLLISION_OBB][COLLISION_AABBE] = kmOBBIntersectsAABBExtent;
-
-   void *velocityFunction[COLLISION_LAST];
-   memset(velocityFunction, 0, sizeof(velocityFunction));
-   velocityFunction[COLLISION_AABB] = kmAABBApplyVelocity;
-   velocityFunction[COLLISION_AABBE] = kmAABBExtentApplyVelocity;
-   velocityFunction[COLLISION_SPHERE] = kmSphereApplyVelocity;
-
-   void *contactFunction[COLLISION_LAST];
-   memset(contactFunction, 0, sizeof(contactFunction));
-   contactFunction[COLLISION_AABB] = kmAABBClosestPointTo;
-   contactFunction[COLLISION_AABBE] = kmAABBExtentClosestPointTo;
-   contactFunction[COLLISION_SPHERE] = kmSphereClosestPointTo;
+   packet.data = data;
+   packet.shape = shape;
+   if (sweep->any) packet.sweep = sweep;
+   if (data->velocity) memcpy(&packet.velocity, data->velocity, sizeof(kmVec3));
 
    /* sweep test! */
-   if (sweep) {
-      kmVec3 packetCenter;
-      float nearestSweepDistance = FLT_MAX;
-      _CollisionPrimitive *nearestSweepPrimitive = NULL;
-      typedef kmBool (*_collisionTestFunc)(const void *a, const void *b);
-      kmVec3 inverseVelocity;
-      typedef void (*_velocityApplyFunc)(const void *a, const kmVec3 *velocity);
-      _velocityApplyFunc velocity = velocityFunction[packet.shape.type];
+   if (packet.sweep && !_collisionWorldTestPacketSweep(world, &packet))
+      return 0;
 
-      kmVec3 nearestContact;
-      kmVec3 beforePoint;
-      _collisionShapeGetPosition(&packet.shape, &beforePoint);
-
-      kmVec3Scale(&inverseVelocity, &packet.velocity, -1.0f);
-      velocity(packet.shape.any, &inverseVelocity);
-      for (p = world->primitives; p; p = p->next) {
-         /* ask user if we should even bother testing */
-         if (data->test && !data->test(data, p))
-            continue;
-
-         _collisionTestFunc test = testFunction[COLLISION_AABBE][p->shape.type];
-         if (!test(sweep, p->shape.any))
-            continue;
-
-         kmVec3 pushVector, contact;
-         _collisionShapeShapeContact(&packet.shape, &p->shape,
-               contactFunction[packet.shape.type], contactFunction[p->shape.type], &contact, &pushVector);
-         float distance = kmVec3Length(&pushVector)+1;
-         if (distance < nearestSweepDistance) {
-            memcpy(&nearestContact, &contact, sizeof(kmVec3));
-            nearestSweepDistance = distance;
-            nearestSweepPrimitive = p;
-         }
-      }
-
-      /* no collision */
-      if (!nearestSweepPrimitive) return 0;
-
-      /* do we need to sweep? */
-      if (nearestSweepDistance > 1.0f) {
-         kmVec3 offsetVelocity;
-         float velocityDist = kmVec3Length(&packet.velocity);
-         kmVec3Scale(&offsetVelocity, &packet.velocity, nearestSweepDistance/velocityDist);
-         velocity(packet.shape.any, &offsetVelocity);
-
-         kmVec3 afterPoint, pushVector;
-         _collisionShapeGetPosition(&packet.shape, &afterPoint);
-         kmVec3Subtract(&pushVector, &afterPoint, &beforePoint);
-
-         CollisionOutData outData;
-         memset(&outData, 0, sizeof(outData));
-         outData.world = world;
-         outData.collider = nearestSweepPrimitive;
-         outData.pushVector = &pushVector;
-         outData.contactPoint = &nearestContact;
-         outData.velocity = &packet.velocity;
-         outData.userData = data->userData;
-         data->response(&outData);
-         memcpy(&packet.velocity, &pushVector, sizeof(kmVec3));
-
-         glhckObject *o = glhckSphereNew(50.0f);
-         glhckMaterial *mat = glhckMaterialNew(NULL);
-         glhckObjectMaterial(o, mat);
-         glhckMaterialDiffuseb(mat, 0, 0, 255, 255);
-         glhckObjectPosition(o, &packet.shape.sphere->point);
-         glhckObjectRender(o);
-         glhckMaterialFree(mat);
-         glhckObjectFree(o);
-
-         // PAUSE_FRAME = 1;
-      } else {
-         velocity(packet.shape.any, &packet.velocity);
-      }
-   }
-
+   /* normal collision checks */
    unsigned int oldCollisions = -1;
-   while (oldCollisions != packet.collisions) {
+   while (packet.collisions < 20 && oldCollisions != packet.collisions) {
       oldCollisions = packet.collisions;
-      for (p = world->primitives; p; p = p->next) {
-         /* ask user if we should even bother testing */
-         if (data->test && !data->test(data, p))
-            continue;
-
-         /* do the test */
-         _collisionWorldTestPacketAgainstPrimitive(world, &packet, p, testFunction[packet.shape.type][p->shape.type],
-               contactFunction[packet.shape.type], contactFunction[p->shape.type], velocityFunction[packet.shape.type]);
-      }
-      if (!data->response) break;
+      for (p = world->primitives; p; p = p->next) _collisionWorldTestPacketAgainstPrimitive(world, &packet, p);
+      if (!data->response || !data->velocity) break;
    }
 
    return packet.collisions;
@@ -1208,6 +1227,7 @@ CollisionWorld* collisionWorldNew(void *userData)
 {
    CollisionWorld *object;
 
+   _collisionInit();
    if (!(object = calloc(1, sizeof(CollisionWorld))))
       goto fail;
 
@@ -1333,46 +1353,71 @@ void collisionWorldRemovePrimitive(CollisionWorld *object, CollisionPrimitive *p
 unsigned int collisionWorldCollideAABB(CollisionWorld *object, const kmAABB *aabb, const CollisionInData *data)
 {
    kmAABB copy;
+   _CollisionShape shape, sweep;
+   memset(&shape, 0, sizeof(shape));
+   memset(&sweep, 0, sizeof(sweep));
    memcpy(&copy, aabb, sizeof(copy));
-   return _collisionWorldCollide(object, COLLISION_AABB, &copy, NULL, data);
+   shape.type = COLLISION_AABB;
+   shape.any = &copy;
+
+   return _collisionWorldCollide(object, &shape, &sweep, data);
 }
 
 unsigned int collisionWorldCollideAABBExtent(CollisionWorld *object, const kmAABBExtent *aabbe, const CollisionInData *data)
 {
    kmAABBExtent copy;
+   _CollisionShape shape, sweep;
+   memset(&shape, 0, sizeof(shape));
+   memset(&sweep, 0, sizeof(sweep));
    memcpy(&copy, aabbe, sizeof(copy));
-   return _collisionWorldCollide(object, COLLISION_AABBE, &copy, NULL, data);
+   shape.type = COLLISION_AABBE;
+   shape.any = &copy;
+
+   return _collisionWorldCollide(object, &shape, &sweep, data);
 }
 
 unsigned int collisionWorldCollideOBB(CollisionWorld *object, const kmOBB *obb, const CollisionInData *data)
 {
    kmOBB copy;
+   _CollisionShape shape, sweep;
+   memset(&shape, 0, sizeof(shape));
+   memset(&sweep, 0, sizeof(sweep));
    memcpy(&copy, obb, sizeof(copy));
-   return _collisionWorldCollide(object, COLLISION_OBB, &copy, NULL, data);
+   shape.type = COLLISION_OBB;
+   shape.any = &copy;
+
+   return _collisionWorldCollide(object, &shape, &sweep, data);
 }
 
 unsigned int collisionWorldCollideSphere(CollisionWorld *object, const kmSphere *sphere, const CollisionInData *data)
 {
    kmSphere copy;
-   kmAABBExtent sweep;
-   char shouldSweep = 0;
+   kmAABBExtent sweepAABB;
+   _CollisionShape shape, sweep;
+   memset(&shape, 0, sizeof(shape));
+   memset(&sweep, 0, sizeof(sweep));
    memcpy(&copy, sphere, sizeof(copy));
+   shape.type = COLLISION_SPHERE;
+   shape.any = &copy;
 
-   if (fabs(data->velocity.x) > sphere->radius ||
-       fabs(data->velocity.y) > sphere->radius ||
-       fabs(data->velocity.z) > sphere->radius) {
+   /* create sweep volume, if needed */
+   if (data->velocity &&
+         (fabs(data->velocity->x) > sphere->radius ||
+          fabs(data->velocity->y) > sphere->radius ||
+          fabs(data->velocity->z) > sphere->radius)) {
       kmVec3 pointBefore;
-      kmVec3Subtract(&pointBefore, &sphere->point, &data->velocity);
-      sweep.point.x = (pointBefore.x+sphere->point.x)*0.5;
-      sweep.point.y = (pointBefore.y+sphere->point.y)*0.5;
-      sweep.point.z = (pointBefore.z+sphere->point.z)*0.5;
-      sweep.extent.x = fabs(sphere->point.x-sweep.point.x)+sphere->radius;
-      sweep.extent.y = fabs(sphere->point.y-sweep.point.y)+sphere->radius;
-      sweep.extent.z = fabs(sphere->point.z-sweep.point.z)+sphere->radius;
-      shouldSweep = 1;
+      kmVec3Subtract(&pointBefore, &sphere->point, data->velocity);
+      sweepAABB.point.x = (pointBefore.x+sphere->point.x)*0.5;
+      sweepAABB.point.y = (pointBefore.y+sphere->point.y)*0.5;
+      sweepAABB.point.z = (pointBefore.z+sphere->point.z)*0.5;
+      sweepAABB.extent.x = fabs(sphere->point.x-sweepAABB.point.x)+sphere->radius;
+      sweepAABB.extent.y = fabs(sphere->point.y-sweepAABB.point.y)+sphere->radius;
+      sweepAABB.extent.z = fabs(sphere->point.z-sweepAABB.point.z)+sphere->radius;
+      sweep.type = COLLISION_AABBE;
+      sweep.any = &sweepAABB;
    }
 
-   return _collisionWorldCollide(object, COLLISION_SPHERE, &copy, (shouldSweep?&sweep:NULL), data);
+   return _collisionWorldCollide(object, &shape, &sweep, data);
 }
 
 void collisionPrimitiveGetPosition(const CollisionPrimitive *object, kmVec3 *position)
@@ -1589,7 +1634,7 @@ static void sphereResponse(const CollisionOutData *collision)
 
    kmSphereApplyVelocity(sphere, collision->pushVector);
 
-#if 0
+#if 1
    sphereVelocity.x -= (collision->contactPoint->x - sphere->point.x)*0.0001;
    sphereVelocity.y -= (collision->contactPoint->y - sphere->point.y)*0.0001;
    sphereVelocity.z -= (collision->contactPoint->z - sphere->point.z)*0.0001;
@@ -1812,23 +1857,21 @@ static void run(GLFWwindow *window)
             ResponseTest *test = &responseTests[i];
             glhckObject *object = NULL;
 
-            CollisionInData colData;
-            memset(&colData, 0, sizeof(colData));
-            colData.velocity = (kmVec3){ 0, 0.1, 0 };
+            kmVec3 velocity = {0,0.1,0};
 
             if (test->type == PRIMITIVE_SPHERE) {
                float mult = glfwGetKey(window, GLFW_KEY_X) ? 1000.0f : 1.0f;
 
-               colData.velocity.x += glfwGetKey(window, GLFW_KEY_RIGHT) * 0.1 * mult;
-               colData.velocity.x -= glfwGetKey(window, GLFW_KEY_LEFT) * 0.1 * mult;
+               velocity.x += glfwGetKey(window, GLFW_KEY_RIGHT) * 0.1 * mult;
+               velocity.x -= glfwGetKey(window, GLFW_KEY_LEFT) * 0.1 * mult;
 
-               colData.velocity.y -= glfwGetKey(window, GLFW_KEY_UP) * 0.4 * mult;
-               colData.velocity.y += glfwGetKey(window, GLFW_KEY_DOWN) * 0.4 * mult;
+               velocity.y -= glfwGetKey(window, GLFW_KEY_UP) * 0.4 * mult;
+               velocity.y += glfwGetKey(window, GLFW_KEY_DOWN) * 0.4 * mult;
 
-               colData.velocity.z -= glfwGetKey(window, GLFW_KEY_W) * 0.1;
-               colData.velocity.z += glfwGetKey(window, GLFW_KEY_S) * 0.1;
+               velocity.z -= glfwGetKey(window, GLFW_KEY_W) * 0.1;
+               velocity.z += glfwGetKey(window, GLFW_KEY_S) * 0.1;
 
-               if (colData.velocity.x == 0.0f) {
+               if (velocity.x == 0.0f) {
                   if (sphereVelocity.x > 0.0f) {
                      sphereVelocity.x *= 0.999f;
                      if (sphereVelocity.x < 0.005f) sphereVelocity.x = 0.0f;
@@ -1839,7 +1882,7 @@ static void run(GLFWwindow *window)
                   }
                }
 
-               if (colData.velocity.y == 0.1) {
+               if (velocity.y == 0.1) {
                   if (sphereVelocity.y > 0.0f) {
                      sphereVelocity.y *= 0.999f;
                      if (sphereVelocity.y < 0.005f) sphereVelocity.z = 0.0f;
@@ -1855,11 +1898,11 @@ static void run(GLFWwindow *window)
                if (sphereVelocity.x < -4.0f) sphereVelocity.x = -4.0f;
                if (sphereVelocity.y < -4.0f) sphereVelocity.y = -4.0f;
 
-#if 0
-               sphereVelocity.x += colData.velocity.x * 0.001;
-               sphereVelocity.y += colData.velocity.y * 0.001;
-               colData.velocity.x = sphereVelocity.x;
-               colData.velocity.y = sphereVelocity.y;
+#if 1
+               sphereVelocity.x += velocity.x * 0.001;
+               sphereVelocity.y += velocity.y * 0.001;
+               velocity.x = sphereVelocity.x;
+               velocity.y = sphereVelocity.y;
                sphereRotation += sphereVelocity.x;
 #endif
             }
@@ -1867,19 +1910,19 @@ static void run(GLFWwindow *window)
             switch (test->type) {
                case PRIMITIVE_AABB:
                   object = glhckCubeFromKazmathAABB(test->shape.aabb);
-                  kmAABBApplyVelocity(test->shape.aabb, &colData.velocity);
+                  kmAABBApplyVelocity(test->shape.aabb, &velocity);
                   break;
                case PRIMITIVE_AABBE:
                   object = glhckCubeFromKazmathAABBExtent(test->shape.aabbe);
-                  kmAABBExtentApplyVelocity(test->shape.aabbe, &colData.velocity);
+                  kmAABBExtentApplyVelocity(test->shape.aabbe, &velocity);
                   break;
                case PRIMITIVE_OBB:
                   object = glhckCubeFromKazmathOBB(test->shape.obb);
-                  kmOBBApplyVelocity(test->shape.obb, &colData.velocity);
+                  kmOBBApplyVelocity(test->shape.obb, &velocity);
                   break;
                case PRIMITIVE_SPHERE:
                   object = glhckSphereFromKazmathSphere(test->shape.sphere);
-                  kmSphereApplyVelocity(test->shape.sphere, &colData.velocity);
+                  kmSphereApplyVelocity(test->shape.sphere, &velocity);
                   glhckObjectRotationf(object, 0, 0, sphereRotation);
                   break;
                default:break;
@@ -1895,6 +1938,9 @@ static void run(GLFWwindow *window)
             PrimObjPair pair;
             pair.primitive = test->shape.any;
             pair.object = object;
+            CollisionInData colData;
+            memset(&colData, 0, sizeof(colData));
+            colData.velocity = &velocity;
             colData.response = test->response;
             colData.test = shouldTestAgainst;
             colData.userData = &pair;
