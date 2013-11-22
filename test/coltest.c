@@ -402,17 +402,16 @@ kmSphere* kmSphereFromAABB(kmSphere *sphere, const kmAABB *aabb)
    return sphere;
 }
 
-/* TODO: Figure out why I must error with +1.0f here */
 kmBool kmSphereIntersectsAABBExtent(const kmSphere *a, const kmAABBExtent *b)
 {
    if(kmAABBExtentContainsPoint(b, &a->point)) return KM_TRUE;
-   kmScalar distance = kmSqDistPointAABBExtent(&a->point, b) + 1.0f;
+   kmScalar distance = kmSqDistPointAABBExtent(&a->point, b);
    return (distance < a->radius * a->radius);
 }
 
 kmBool kmSphereIntersectsAABB(const kmSphere *a, const kmAABB *b)
 {
-   kmScalar distance = kmSqDistPointAABB(&a->point, b) + 1.0f;
+   kmScalar distance = kmSqDistPointAABB(&a->point, b);
    return (distance < a->radius * a->radius);
 }
 
@@ -966,14 +965,6 @@ static void _collisionShapeShapeContact(const _CollisionShape *packetShape, cons
    if (contactDist > penetrativeDist) kmVec3Swap(outContact, &penetrativeContact);
    kmVec3Subtract(outPush, outContact, &penetrativeContact);
 
-   /* sanity checking (prevents getting stuck) */
-   if (kmVec3AreEqual(outPush, &zero)) {
-      kmVec3 primitiveCenter;
-      _collisionShapeGetPosition(primitiveShape, &primitiveCenter);
-      kmVec3Subtract(outPush, &packetCenter, &primitiveCenter);
-      kmVec3Normalize(outPush, outPush);
-   }
-
    /* debug */
    glhckObject *o = glhckCubeNew(5.0);
    kmVec3 pos = *outContact;
@@ -1033,15 +1024,12 @@ static void _collisionWorldTestPacketAgainstPrimitive(CollisionWorld *world, _Co
 
    if (packet->data->response) {
       float scale = 0.0f;
-      kmVec3 contactPoint, pushVector;
+      kmVec3 contactPoint, pushVector, inverseVelocity;
+      kmVec3Scale(&inverseVelocity, &packet->velocity, -1);
+      velocity(packet->shape->any, &inverseVelocity);
       _collisionShapeShapeContact(packet->shape, &primitive->shape, &contactPoint, &pushVector);
-
-      /* grow push vector until we are out */
-      do {
-         ++scale;
-         velocity(packet->shape->any, &pushVector);
-      } while (scale < 15.0f && intersection(packet->shape->any, primitive->shape.any));
-      kmVec3Scale(&pushVector, &pushVector, scale);
+      velocity(packet->shape->any, &packet->velocity);
+      velocity(packet->shape->any, &pushVector);
 
 #if 0
       if (pushVector.y < -30 || pushVector.y > 30 || packet->collisions > 20) {
